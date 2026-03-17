@@ -1,0 +1,150 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  SQS Standard Queue + Dead-Letter Queue for the SAST scan pipeline.
+  Lambda A sends scan jobs here; Lambda B / ECS polls and processes them.
+
+# ---------------------------------------------------------------------------
+# Parameters
+# ---------------------------------------------------------------------------
+Parameters:
+  QueueName:
+    Type: String
+    Default: sast-scan-queue
+    Description: Main queue that buffers scan jobs from Lambda A to Lambda B.
+
+  DLQName:
+    Type: String
+    Default: sast-scan-dlq
+    Description: Dead-letter queue for messages that fail after MaxReceiveCount attempts.
+
+  MessageRetentionSeconds:
+    Type: Number
+    Default: 86400        # 24 hours
+    Description: How long (seconds) an unprocessed message stays in the main queue.
+
+  VisibilityTimeoutSeconds:
+    Type: Number
+    Default: 300          # 5 minutes — must be >= Lambda B / ECS task timeout
+    Description: >
+      Time a message is invisible after being received.
+      Set this >= the maximum scan duration so that a crashed consumer
+      does not cause the same job to be processed twice.
+
+  MaxReceiveCount:
+    Type: Number
+    Default: 3
+    Description: >
+      Number of times a message can be received before being moved to the DLQ.
+      3 attempts means Lambda B gets 3 chances before we give up.
+
+  DLQMessageRetentionSeconds:
+    Type: Number
+    Default: 1209600      # 14 days — maximum allowed by SQS
+    Description: How long failed messages stay in the DLQ for inspection / replay.
+
+# ---------------------------------------------------------------------------
+# Resources
+# ---------------------------------------------------------------------------
+Resources:
+
+  # --- Dead-Letter Queue ---------------------------------------------------
+  ScanDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Ref DLQName
+      MessageRetentionPeriod: !Ref DLQMessageRetentionSeconds
+      # Encrypt at rest with the default SQS-managed key
+      SqsManagedSseEnabled: true
+      Tags:
+        - Key: Project
+          Value: sast-platform
+        - Key: Component
+          Value: dlq
+
+  # --- Main Scan Queue -----------------------------------------------------
+  ScanQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Ref QueueName
+      # Consumer (Lambda B / ECS) has this many seconds to process a message
+      VisibilityTimeout: !Ref VisibilityTimeoutSeconds
+      MessageRetentionPeriod: !Ref MessageRetentionSeconds
+      # Long-polling reduces empty receives and Lambda invocation cost
+      ReceiveMessageWaitTimeSeconds: 20
+      SqsManagedSseEnabled: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt ScanDeadLetterQueue.Arn
+        maxReceiveCount: !Ref MaxReceiveCount
+      Tags:
+        - Key: Project
+          Value: sast-platform
+        - Key: Component
+          Value: main-queue
+
+  # --- Queue Policy --------------------------------------------------------
+  # Allows Lambda A's execution role to SendMessage and Lambda B's role
+  # to receive/delete messages.  The actual role ARNs are cross-referenced
+  # from the iam_roles stack via SSM or CloudFormation Exports.
+  # For now we restrict to the same AWS account for safety.
+  ScanQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref ScanQueue
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowAccountAccess
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Action:
+              - sqs:SendMessage
+              - sqs:ReceiveMessage
+              - sqs:DeleteMessage
+              - sqs:GetQueueAttributes
+              - sqs:GetQueueUrl
+              - sqs:ChangeMessageVisibility
+            Resource: !GetAtt ScanQueue.Arn
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: "sqs:*"
+            Resource: !GetAtt ScanQueue.Arn
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+
+# ---------------------------------------------------------------------------
+# Outputs  (exported so lambda_a.yaml / lambda_b.yaml can import them)
+# ---------------------------------------------------------------------------
+Outputs:
+  ScanQueueUrl:
+    Description: URL of the main scan queue (set as SQS_QUEUE_URL in Lambda A env)
+    Value: !Ref ScanQueue
+    Export:
+      Name: !Sub "${AWS::StackName}-ScanQueueUrl"
+
+  ScanQueueArn:
+    Description: ARN of the main scan queue (used as event source for Lambda B)
+    Value: !GetAtt ScanQueue.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-ScanQueueArn"
+
+  ScanQueueName:
+    Description: Physical name of the main scan queue
+    Value: !GetAtt ScanQueue.QueueName
+    Export:
+      Name: !Sub "${AWS::StackName}-ScanQueueName"
+
+  DeadLetterQueueUrl:
+    Description: URL of the dead-letter queue (for monitoring / manual replay)
+    Value: !Ref ScanDeadLetterQueue
+    Export:
+      Name: !Sub "${AWS::StackName}-DLQUrl"
+
+  DeadLetterQueueArn:
+    Description: ARN of the dead-letter queue (used in CloudWatch alarm)
+    Value: !GetAtt ScanDeadLetterQueue.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-DLQArn"
