@@ -1,0 +1,292 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'ECS Fargate resources for SAST Platform - handles large file scanning when Lambda resources are insufficient'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: 'sast-platform'
+    Description: 'Project name for resource naming'
+  
+  Environment:
+    Type: String
+    Default: 'dev'
+    AllowedValues: [dev, staging, prod]
+    Description: 'Environment name'
+  
+  VpcId:
+    Type: 'AWS::EC2::VPC::Id'
+    Description: 'VPC ID for ECS tasks'
+  
+  SubnetIds:
+    Type: 'List<AWS::EC2::Subnet::Id>'
+    Description: 'Subnet IDs for ECS tasks (recommend private subnets)'
+  
+  ScannerImageUri:
+    Type: String
+    Description: 'ECR URI for the security scanner Docker image'
+    Default: '123456789012.dkr.ecr.us-east-1.amazonaws.com/sast-scanner:latest'
+  
+  DynamoDBTableName:
+    Type: String
+    Description: 'DynamoDB table name for scan status'
+    Default: 'sast-scans'
+  
+  S3BucketName:
+    Type: String
+    Description: 'S3 bucket name for scan reports'
+
+Resources:
+  # ECS Cluster
+  ECSCluster:
+    Type: 'AWS::ECS::Cluster'
+    Properties:
+      ClusterName: !Sub '${ProjectName}-${Environment}-cluster'
+      CapacityProviders:
+        - FARGATE
+        - FARGATE_SPOT
+      DefaultCapacityProviderStrategy:
+        - CapacityProvider: FARGATE
+          Weight: 1
+        - CapacityProvider: FARGATE_SPOT
+          Weight: 4  # Prefer SPOT instances for cost savings
+      ClusterSettings:
+        - Name: containerInsights
+          Value: enabled
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Security Group for ECS Tasks
+  ECSSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: 'Security group for SAST scanner ECS tasks'
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: 'HTTPS outbound for AWS API calls'
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: 'HTTP outbound for package downloads'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-ecs-sg'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ECS Task Execution Role
+  ECSTaskExecutionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Sub '${ProjectName}-${Environment}-ecs-execution-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy'
+      Policies:
+        - PolicyName: ECRAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'ecr:BatchCheckLayerAvailability'
+                  - 'ecr:GetDownloadUrlForLayer'
+                  - 'ecr:BatchGetImage'
+                  - 'ecr:GetAuthorizationToken'
+                Resource: '*'
+        - PolicyName: CloudWatchLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                  - 'logs:DescribeLogStreams'
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/ecs/${ProjectName}-${Environment}*'
+
+  # ECS Task Role (for application permissions)
+  ECSTaskRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Sub '${ProjectName}-${Environment}-ecs-task-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: DynamoDBAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'dynamodb:UpdateItem'
+                  - 'dynamodb:GetItem'
+                Resource: !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DynamoDBTableName}'
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:PutObject'
+                  - 's3:PutObjectAcl'
+                  - 's3:GetObject'
+                Resource: !Sub 'arn:aws:s3:::${S3BucketName}/reports/*'
+
+  # CloudWatch Log Group
+  ECSLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Properties:
+      LogGroupName: !Sub '/ecs/${ProjectName}-${Environment}-scanner'
+      RetentionInDays: 14
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ECS Task Definition
+  ScannerTaskDefinition:
+    Type: 'AWS::ECS::TaskDefinition'
+    Properties:
+      Family: !Sub '${ProjectName}-${Environment}-scanner'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: '2048'  # 2 vCPU
+      Memory: '4096'  # 4 GB
+      ExecutionRoleArn: !GetAtt ECSTaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt ECSTaskRole.Arn
+      ContainerDefinitions:
+        - Name: scanner-container
+          Image: !Ref ScannerImageUri
+          Essential: true
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref ECSLogGroup
+              awslogs-region: !Ref 'AWS::Region'
+              awslogs-stream-prefix: ecs
+          Environment:
+            - Name: DYNAMODB_TABLE_NAME
+              Value: !Ref DynamoDBTableName
+            - Name: S3_BUCKET_NAME
+              Value: !Ref S3BucketName
+            - Name: AWS_DEFAULT_REGION
+              Value: !Ref 'AWS::Region'
+          # Resource limits
+          MemoryReservation: 3584  # Reserve 3.5GB, allow burst to 4GB
+          Ulimits:
+            - Name: nofile
+              SoftLimit: 65536
+              HardLimit: 65536
+          # Health check
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - 'python -c "import subprocess; subprocess.run([\"bandit\", \"--version\"], check=True); subprocess.run([\"semgrep\", \"--version\"], check=True)" || exit 1'
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 60
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ECR Repository for Scanner Image
+  ScannerRepository:
+    Type: 'AWS::ECR::Repository'
+    Properties:
+      RepositoryName: !Sub '${ProjectName}-${Environment}-scanner'
+      ImageTagMutability: MUTABLE
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Keep last 10 images",
+                "selection": {
+                  "tagStatus": "any",
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 10
+                },
+                "action": {
+                  "type": "expire"
+                }
+              }
+            ]
+          }
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+Outputs:
+  ECSClusterName:
+    Description: 'ECS Cluster Name'
+    Value: !Ref ECSCluster
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-ecs-cluster-name'
+
+  ECSClusterArn:
+    Description: 'ECS Cluster ARN'
+    Value: !GetAtt ECSCluster.Arn
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-ecs-cluster-arn'
+
+  TaskDefinitionArn:
+    Description: 'Scanner Task Definition ARN'
+    Value: !Ref ScannerTaskDefinition
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-scanner-task-definition'
+
+  ECSSecurityGroupId:
+    Description: 'ECS Security Group ID'
+    Value: !Ref ECSSecurityGroup
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-ecs-security-group'
+
+  ECRRepositoryUri:
+    Description: 'ECR Repository URI for scanner image'
+    Value: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ScannerRepository}'
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-ecr-repository-uri'
+
+  TaskExecutionRoleArn:
+    Description: 'ECS Task Execution Role ARN'
+    Value: !GetAtt ECSTaskExecutionRole.Arn
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-ecs-execution-role-arn'
+
+  TaskRoleArn:
+    Description: 'ECS Task Role ARN'
+    Value: !GetAtt ECSTaskRole.Arn
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-ecs-task-role-arn'

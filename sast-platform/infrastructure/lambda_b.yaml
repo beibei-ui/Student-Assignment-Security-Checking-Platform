@@ -1,0 +1,287 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Lambda B for SAST Platform - Security scanning engine that consumes SQS messages'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: 'sast-platform'
+    Description: 'Project name for resource naming'
+  
+  Environment:
+    Type: String
+    Default: 'dev'
+    AllowedValues: [dev, staging, prod]
+    Description: 'Environment name'
+  
+  SQSQueueArn:
+    Type: String
+    Description: 'ARN of the SQS queue for scan requests'
+  
+  DynamoDBTableName:
+    Type: String
+    Description: 'DynamoDB table name for scan status'
+    Default: 'sast-scans'
+  
+  S3BucketName:
+    Type: String
+    Description: 'S3 bucket name for scan reports'
+  
+  ECSClusterName:
+    Type: String
+    Description: 'ECS cluster name for fallback processing'
+    Default: ''
+  
+  ECSTaskDefinitionArn:
+    Type: String
+    Description: 'ECS task definition ARN for fallback processing'
+    Default: ''
+  
+  SubnetIds:
+    Type: CommaDelimitedList
+    Description: 'Subnet IDs for ECS tasks (comma-separated)'
+    Default: ''
+  
+  SecurityGroupIds:
+    Type: CommaDelimitedList
+    Description: 'Security group IDs for ECS tasks (comma-separated)'
+    Default: ''
+
+Resources:
+  # Lambda B Execution Role
+  LambdaBExecutionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Sub '${ProjectName}-${Environment}-lambda-b-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaSQSQueueExecutionRole'
+      Policies:
+        - PolicyName: DynamoDBAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'dynamodb:UpdateItem'
+                  - 'dynamodb:GetItem'
+                Resource: !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DynamoDBTableName}'
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:PutObject'
+                  - 's3:PutObjectAcl'
+                  - 's3:GetObject'
+                  - 's3:GeneratePresignedUrl'
+                Resource: !Sub 'arn:aws:s3:::${S3BucketName}/reports/*'
+        - PolicyName: ECSAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'ecs:RunTask'
+                  - 'ecs:DescribeTasks'
+                Resource: 
+                  - !Ref ECSTaskDefinitionArn
+                  - !Sub 'arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:task/*'
+              - Effect: Allow
+                Action:
+                  - 'iam:PassRole'
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    'iam:PassedToService': ecs-tasks.amazonaws.com
+        - PolicyName: CloudWatchLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ProjectName}-${Environment}-scanner*'
+
+  # CloudWatch Log Group for Lambda B
+  LambdaBLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ProjectName}-${Environment}-scanner'
+      RetentionInDays: 14
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Lambda B Function
+  LambdaBFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-scanner'
+      Runtime: python3.11
+      Handler: handler.lambda_handler
+      Role: !GetAtt LambdaBExecutionRole.Arn
+      Code:
+        ZipFile: |
+          def lambda_handler(event, context):
+              return {"statusCode": 200, "body": "Lambda B placeholder"}
+      Environment:
+        Variables:
+          DYNAMODB_TABLE_NAME: !Ref DynamoDBTableName
+          S3_BUCKET_NAME: !Ref S3BucketName
+          ECS_CLUSTER_NAME: !Ref ECSClusterName
+          ECS_TASK_DEFINITION: !Ref ECSTaskDefinitionArn
+          ECS_SUBNETS: !Join [',', !Ref SubnetIds]
+          ECS_SECURITY_GROUPS: !Join [',', !Ref SecurityGroupIds]
+      # Resource configuration for scanning workloads
+      MemorySize: 3008  # Maximum Lambda memory (3GB)
+      Timeout: 900      # 15 minutes (maximum Lambda timeout)
+      ReservedConcurrencyLimit: 10  # Limit concurrent executions to manage costs
+      DeadLetterQueue:
+        TargetArn: !GetAtt LambdaBDLQ.Arn
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Lambda B Dead Letter Queue
+  LambdaBDLQ:
+    Type: 'AWS::SQS::Queue'
+    Properties:
+      QueueName: !Sub '${ProjectName}-${Environment}-lambda-b-dlq'
+      MessageRetentionPeriod: 1209600  # 14 days
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  # SQS Event Source Mapping
+  SQSEventSourceMapping:
+    Type: 'AWS::Lambda::EventSourceMapping'
+    Properties:
+      EventSourceArn: !Ref SQSQueueArn
+      FunctionName: !Ref LambdaBFunction
+      BatchSize: 1  # Process one scan request at a time
+      MaximumBatchingWindowInSeconds: 0
+      FunctionResponseTypes:
+        - ReportBatchItemFailures  # Enable partial batch failure handling
+      ScalingConfig:
+        MaximumConcurrency: 10  # Match reserved concurrency
+
+  # CloudWatch Alarms for Monitoring
+  LambdaBErrorAlarm:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-lambda-b-errors'
+      AlarmDescription: 'Lambda B function errors'
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 5
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref LambdaBFunction
+      TreatMissingData: notBreaching
+
+  LambdaBDurationAlarm:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-lambda-b-duration'
+      AlarmDescription: 'Lambda B function duration approaching timeout'
+      MetricName: Duration
+      Namespace: AWS/Lambda
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 800000  # 800 seconds (13+ minutes)
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref LambdaBFunction
+      TreatMissingData: notBreaching
+
+  LambdaBThrottleAlarm:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-lambda-b-throttles'
+      AlarmDescription: 'Lambda B function throttles'
+      MetricName: Throttles
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref LambdaBFunction
+      TreatMissingData: notBreaching
+
+  # Lambda Function Version (for deployment tracking)
+  LambdaBVersion:
+    Type: 'AWS::Lambda::Version'
+    Properties:
+      FunctionName: !Ref LambdaBFunction
+      Description: !Sub 'Initial version for ${Environment}'
+
+  # Lambda Function Alias (for blue-green deployments)
+  LambdaBAlias:
+    Type: 'AWS::Lambda::Alias'
+    Properties:
+      FunctionName: !Ref LambdaBFunction
+      FunctionVersion: !GetAtt LambdaBVersion.Version
+      Name: !Ref Environment
+      Description: !Sub 'Alias for ${Environment} environment'
+
+Outputs:
+  LambdaBFunctionName:
+    Description: 'Lambda B Function Name'
+    Value: !Ref LambdaBFunction
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-lambda-b-function-name'
+
+  LambdaBFunctionArn:
+    Description: 'Lambda B Function ARN'
+    Value: !GetAtt LambdaBFunction.Arn
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-lambda-b-function-arn'
+
+  LambdaBAliasArn:
+    Description: 'Lambda B Alias ARN'
+    Value: !Ref LambdaBAlias
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-lambda-b-alias-arn'
+
+  LambdaBRoleArn:
+    Description: 'Lambda B Execution Role ARN'
+    Value: !GetAtt LambdaBExecutionRole.Arn
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-lambda-b-role-arn'
+
+  LambdaBDLQUrl:
+    Description: 'Lambda B Dead Letter Queue URL'
+    Value: !Ref LambdaBDLQ
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-lambda-b-dlq-url'
+
+  LambdaBLogGroupName:
+    Description: 'Lambda B CloudWatch Log Group Name'
+    Value: !Ref LambdaBLogGroup
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-lambda-b-log-group'
