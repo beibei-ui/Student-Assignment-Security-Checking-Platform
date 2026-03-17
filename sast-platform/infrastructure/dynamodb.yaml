@@ -2,53 +2,53 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: DynamoDB table for scan status and history records
 
 Parameters:
-	TableName:
-		Type: String
-		Default: ScanResults
-		Description: DynamoDB table name for scan records
+  TableName:
+    Type: String
+    Default: ScanResults
+    Description: DynamoDB table name for scan records
 
 Resources:
-	ScanResultsTable:
-		Type: AWS::DynamoDB::Table
-		Properties:
-			TableName: !Ref TableName
-			BillingMode: PAY_PER_REQUEST
-			AttributeDefinitions:
-				- AttributeName: student_id
-					AttributeType: S
-				- AttributeName: scan_id
-					AttributeType: S
-			KeySchema:
-				- AttributeName: student_id
-					KeyType: HASH
-				- AttributeName: scan_id
-					KeyType: RANGE
-			GlobalSecondaryIndexes:
-				- IndexName: ScanIdIndex
-					KeySchema:
-						- AttributeName: scan_id
-							KeyType: HASH
-					Projection:
-						ProjectionType: ALL
-			PointInTimeRecoverySpecification:
-				PointInTimeRecoveryEnabled: true
+  ScanResultsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref TableName
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: student_id
+          AttributeType: S
+        - AttributeName: scan_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: student_id
+          KeyType: HASH
+        - AttributeName: scan_id
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: ScanIdIndex
+          KeySchema:
+            - AttributeName: scan_id
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
 
 Outputs:
-	ScanResultsTableName:
-		Description: DynamoDB table name
-		Value: !Ref ScanResultsTable
-		Export:
-			Name: !Sub "${AWS::StackName}-ScanResultsTableName"
+  ScanResultsTableName:
+    Description: DynamoDB table name
+    Value: !Ref ScanResultsTable
+    Export:
+      Name: !Sub "${AWS::StackName}-ScanResultsTableName"
 
-	ScanResultsTableArn:
-		Description: DynamoDB table ARN
-		Value: !GetAtt ScanResultsTable.Arn
-		Export:
-			Name: !Sub "${AWS::StackName}-ScanResultsTableArn"
+  ScanResultsTableArn:
+    Description: DynamoDB table ARN
+    Value: !GetAtt ScanResultsTable.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-ScanResultsTableArn"
 
-	ScanIdIndexName:
-		Description: GSI used by GET /status query path
-		Value: ScanIdIndex
-		Export:
-			Name: !Sub "${AWS::StackName}-ScanIdIndexName"
+  ScanIdIndexName:
+    Description: GSI used by GET /status query path
+    Value: ScanIdIndex
+    Export:
+      Name: !Sub "${AWS::StackName}-ScanIdIndexName"
 
