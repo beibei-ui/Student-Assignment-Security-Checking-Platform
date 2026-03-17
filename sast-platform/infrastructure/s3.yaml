@@ -1,0 +1,97 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: S3 buckets for scan reports and static frontend hosting
+
+Parameters:
+	ReportBucketName:
+		Type: String
+		Default: sast-platform-reports
+		Description: Private bucket used for report JSON storage
+
+	FrontendBucketName:
+		Type: String
+		Default: sast-platform-frontend
+		Description: Bucket used for frontend static assets
+
+Resources:
+	ReportBucket:
+		Type: AWS::S3::Bucket
+		Properties:
+			BucketName: !Ref ReportBucketName
+			VersioningConfiguration:
+				Status: Enabled
+			BucketEncryption:
+				ServerSideEncryptionConfiguration:
+					- ServerSideEncryptionByDefault:
+							SSEAlgorithm: AES256
+			PublicAccessBlockConfiguration:
+				BlockPublicAcls: true
+				BlockPublicPolicy: true
+				IgnorePublicAcls: true
+				RestrictPublicBuckets: true
+
+	ReportBucketPolicy:
+		Type: AWS::S3::BucketPolicy
+		Properties:
+			Bucket: !Ref ReportBucket
+			PolicyDocument:
+				Version: "2012-10-17"
+				Statement:
+					- Sid: DenyInsecureTransport
+						Effect: Deny
+						Principal: "*"
+						Action: "s3:*"
+						Resource:
+							- !Sub "arn:aws:s3:::${ReportBucket}"
+							- !Sub "arn:aws:s3:::${ReportBucket}/*"
+						Condition:
+							Bool:
+								aws:SecureTransport: false
+
+	FrontendBucket:
+		Type: AWS::S3::Bucket
+		Properties:
+			BucketName: !Ref FrontendBucketName
+			WebsiteConfiguration:
+				IndexDocument: index.html
+				ErrorDocument: index.html
+			PublicAccessBlockConfiguration:
+				BlockPublicAcls: false
+				BlockPublicPolicy: false
+				IgnorePublicAcls: false
+				RestrictPublicBuckets: false
+
+	FrontendBucketPolicy:
+		Type: AWS::S3::BucketPolicy
+		Properties:
+			Bucket: !Ref FrontendBucket
+			PolicyDocument:
+				Version: "2012-10-17"
+				Statement:
+					- Sid: PublicReadForWebsite
+						Effect: Allow
+						Principal: "*"
+						Action:
+							- s3:GetObject
+						Resource: !Sub "arn:aws:s3:::${FrontendBucket}/*"
+
+Outputs:
+	ReportBucketNameOutput:
+		Description: Bucket that stores scan reports under reports/{student_id}/{scan_id}.json
+		Value: !Ref ReportBucket
+		Export:
+			Name: !Sub "${AWS::StackName}-ReportBucketName"
+
+	ReportPrefixConvention:
+		Description: Canonical report path structure
+		Value: reports/{student_id}/{scan_id}.json
+
+	FrontendBucketNameOutput:
+		Description: Bucket that hosts frontend static files
+		Value: !Ref FrontendBucket
+		Export:
+			Name: !Sub "${AWS::StackName}-FrontendBucketName"
+
+	FrontendWebsiteURL:
+		Description: S3 website endpoint for frontend
+		Value: !GetAtt FrontendBucket.WebsiteURL
+
