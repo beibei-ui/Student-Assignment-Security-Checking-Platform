@@ -6,7 +6,7 @@ Input validation for POST /scan requests.
 All validation logic is isolated here so it can be unit tested independently.
 """
 
-SUPPORTED_LANGUAGES = ["python", "java", "javascript"]
+SUPPORTED_LANGUAGES = ["python", "java", "javascript", "typescript", "go", "ruby", "c", "cpp"]
 MAX_CODE_BYTES = 1 * 1024 * 1024  # 1 MB
 
 
