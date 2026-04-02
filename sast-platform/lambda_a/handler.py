@@ -58,7 +58,11 @@ def lambda_handler(event, context):
 
 def _handle_post_scan(event):
     # Authenticate — resolve X-Student-Key → student_id
-    student_id = _resolve_student(event)
+    try:
+        student_id = _resolve_student(event)
+    except Exception:
+        logger.exception("Auth table lookup failed")
+        return _response(500, {"error": "Internal error. Please try again."})
     if not student_id:
         return _response(401, {"error": "Missing or invalid X-Student-Key header."})
 
@@ -103,7 +107,11 @@ def _handle_post_scan(event):
 
 def _handle_get_status(event):
     # Authenticate
-    student_id = _resolve_student(event)
+    try:
+        student_id = _resolve_student(event)
+    except Exception:
+        logger.exception("Auth table lookup failed")
+        return _response(500, {"error": "Internal error. Please try again."})
     if not student_id:
         return _response(401, {"error": "Missing or invalid X-Student-Key header."})
 

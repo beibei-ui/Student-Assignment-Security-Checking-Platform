@@ -24,6 +24,7 @@ import secrets
 import sys
 
 import boto3
+from boto3.dynamodb.conditions import Attr
 from botocore.exceptions import ClientError
 
 
@@ -31,24 +32,42 @@ def generate_key() -> str:
     return secrets.token_hex(16)  # 32 hex chars
 
 
-def seed_student(table, student_id: str, api_key: str | None = None) -> str | None:
+def _find_existing_key(table, student_id: str) -> str | None:
     """
-    Write a student → api_key entry only if that api_key slot is not yet taken.
-    If api_key is None, a new one is generated.
+    Scan the (small) auth table for any existing api_key that maps to student_id.
+    Returns the api_key string if found, otherwise None.
+    """
+    resp = table.scan(
+        FilterExpression=Attr("student_id").eq(student_id),
+        Limit=1,
+    )
+    items = resp.get("Items", [])
+    return items[0]["api_key"] if items else None
 
-    Returns the api_key that was written, or None if the student already has a
-    key (i.e. the script is being re-run — existing key is left unchanged).
-    This makes the script idempotent: safe to re-run without invalidating
-    existing student sessions.
+
+def seed_student(table, student_id: str) -> str | None:
     """
-    key = api_key or generate_key()
+    Write a student → api_key entry only if that student does not yet have one.
+
+    Checks for an existing entry by scanning on student_id (safe — the auth
+    table is small). If already seeded, returns None so the caller knows to
+    skip. If not found, generates a fresh key and inserts it; the
+    ConditionExpression guards against the negligible chance of a random
+    api_key hash collision.
+
+    Returns the new api_key, or None if the student was already present.
+    """
+    if _find_existing_key(table, student_id) is not None:
+        return None  # already seeded — leave existing key intact
+
+    key = generate_key()
     try:
         table.put_item(
             Item={"api_key": key, "student_id": student_id},
             ConditionExpression="attribute_not_exists(api_key)",
         )
     except table.meta.client.exceptions.ConditionalCheckFailedException:
-        # Key already exists — leave it unchanged so existing sessions stay valid
+        # Astronomically unlikely api_key collision — treat as skip
         return None
     return key
 
