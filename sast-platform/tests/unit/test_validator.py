@@ -6,11 +6,7 @@ Run with:
     pytest tests/unit/test_validator.py -v
 """
 
-import sys
-import os
 import pytest
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lambda_a"))
 
 from validator import validate_scan_request, normalize, SUPPORTED_LANGUAGES, MAX_CODE_BYTES
 

@@ -8,8 +8,6 @@ Run with:
     pytest tests/unit/test_dispatcher.py -v
 """
 
-import sys
-import os
 import json
 import unittest.mock as mock
 
@@ -17,9 +15,7 @@ import boto3
 import pytest
 from moto import mock_aws
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lambda_a"))
-
-import dispatcher  # imported after sys.path is set
+import dispatcher
 
 
 # ── Constants ──────────────────────────────────────────────────────────────────
@@ -217,16 +213,11 @@ class TestCreateScanJobFailures:
 
     def test_dynamodb_error_raises_exception(self, aws_env):
         """If DynamoDB put_item fails, create_scan_job should propagate the exception."""
-        with mock.patch.object(
-            aws_env["table"].meta.client, "put_item",
-            side_effect=Exception("DynamoDB unavailable")
-        ):
-            # Patch the Table object returned by dynamodb.Table(...)
-            mock_table = mock.MagicMock()
-            mock_table.put_item.side_effect = Exception("DynamoDB unavailable")
-            with mock.patch.object(dispatcher.dynamodb, "Table", return_value=mock_table):
-                with pytest.raises(Exception, match="DynamoDB unavailable"):
-                    _call_create(aws_env)
+        mock_table = mock.MagicMock()
+        mock_table.put_item.side_effect = Exception("DynamoDB unavailable")
+        with mock.patch.object(dispatcher.dynamodb, "Table", return_value=mock_table):
+            with pytest.raises(Exception, match="DynamoDB unavailable"):
+                _call_create(aws_env)
 
     def test_sqs_error_raises_exception(self, aws_env):
         """If SQS send_message fails, create_scan_job should propagate the exception."""
