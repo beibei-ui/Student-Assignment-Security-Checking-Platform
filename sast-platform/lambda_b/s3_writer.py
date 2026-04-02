@@ -74,11 +74,11 @@ class S3Writer:
         except ClientError as e:
             error_msg = e.response["Error"]["Message"]
             logger.error(f"failed to generate URL: {error_msg}")
-            raise Exception(f"failed to generate URL: {error_msg}")
+            raise S3WriteError(f"failed to generate URL: {error_msg}")
 
         except Exception as e:
             logger.error(f"unexpected error: {str(e)}")
-            raise Exception(f"unexpected error: {str(e)}")
+            raise S3WriteError(f"unexpected error: {str(e)}")
 
     def check_object_exists(self, s3_key):
         """Check if a report exists in S3."""
