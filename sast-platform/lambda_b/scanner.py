@@ -136,7 +136,7 @@ class SecurityScanner:
             'cpp': '.cpp'
         }
         
-        file_ext = ext_map.get(language.lower(), '.txt')
+        file_ext = ext_map[language.lower()]
         code_file = os.path.join(self.temp_dir, f"code_{scan_id}{file_ext}")
         
         # Write code to temp file

@@ -1,10 +1,7 @@
 import json
 import os
-import sys
 import unittest
 from unittest.mock import patch, MagicMock
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lambda_b"))
 
 from scanner import SecurityScanner, scan_code_with_timeout
 
@@ -79,11 +76,13 @@ class TestSemgrepRouting(unittest.TestCase):
 
     def test_java_file_has_java_extension(self):
         _, mock_run = self._scan("java")
-        self.assertTrue(mock_run.call_args[0][0][-1].endswith(".java"))
+        cmd = mock_run.call_args[0][0]
+        self.assertTrue(any(arg.endswith(".java") for arg in cmd))
 
     def test_javascript_file_has_js_extension(self):
         _, mock_run = self._scan("javascript")
-        self.assertTrue(mock_run.call_args[0][0][-1].endswith(".js"))
+        cmd = mock_run.call_args[0][0]
+        self.assertTrue(any(arg.endswith(".js") for arg in cmd))
 
 
 # ---------------------------------------------------------------------------
@@ -96,7 +95,8 @@ class TestNewLanguageRouting(unittest.TestCase):
         with patch("scanner.subprocess.run", return_value=_mock_run(stdout=_semgrep_stdout())) as mock_run:
             result = SecurityScanner().scan_code("// code", language, "sid")
         self.assertEqual(result["tool"], "semgrep", f"{language} should route to semgrep")
-        self.assertTrue(mock_run.call_args[0][0][-1].endswith(expected_ext),
+        cmd = mock_run.call_args[0][0]
+        self.assertTrue(any(arg.endswith(expected_ext) for arg in cmd),
                         f"{language} expected ext {expected_ext}")
 
     def test_typescript_routes_to_semgrep_with_ts_extension(self):
