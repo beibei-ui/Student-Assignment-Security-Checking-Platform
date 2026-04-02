@@ -23,9 +23,13 @@ s3       = boto3.client("s3")
 PRESIGNED_URL_EXPIRY = 3600  # seconds (1 hour)
 
 
-def get_scan_status(scan_id: str, table_name: str, s3_bucket: str) -> dict:
+def get_scan_status(scan_id: str, table_name: str, s3_bucket: str,
+                    student_id: str | None = None) -> dict:
     """
     Look up a scan record by scan_id using the GSI (scan_id-index).
+
+    If student_id is provided, enforces ownership: raises PermissionError when
+    the record belongs to a different student (prevents cross-tenant read).
 
     Returns a dict with:
       - status: PENDING | DONE | FAILED
@@ -35,8 +39,9 @@ def get_scan_status(scan_id: str, table_name: str, s3_bucket: str) -> dict:
       - (when DONE) vuln_count, completed_at, report_url (presigned S3 URL)
 
     Raises:
-        ValueError  if scan_id not found
-        ClientError if AWS call fails
+        ValueError      if scan_id not found
+        PermissionError if student_id does not match the record owner
+        ClientError     if AWS call fails
     """
     table = dynamodb.Table(table_name)
 
@@ -52,6 +57,14 @@ def get_scan_status(scan_id: str, table_name: str, s3_bucket: str) -> dict:
         raise ValueError(f"scan_id '{scan_id}' not found.")
 
     item = items[0]
+
+    # Ownership check — student A must not read student B's results
+    if student_id and item.get("student_id") != student_id:
+        logger.warning(
+            "Ownership violation: student_id=%s attempted to read scan_id=%s owned by %s",
+            student_id, scan_id, item.get("student_id"),
+        )
+        raise PermissionError("You do not have permission to view this scan.")
     result = {
         "scan_id":    item["scan_id"],
         "status":     item["status"],
