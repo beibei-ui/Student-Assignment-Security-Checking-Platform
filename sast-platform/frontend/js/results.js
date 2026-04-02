@@ -23,25 +23,95 @@ function normalizeSummary(summary) {
 	};
 }
 
+/**
+ * Build the download link section.
+ *
+ * If report_url_expires_at is present, show when the link expires and wire up
+ * a "Refresh link" button that re-calls GET /status to get a fresh URL.
+ * This prevents students from getting a silent 403 when they return after
+ * the 1-hour presigned URL TTL.
+ */
+function buildDownloadSection(report) {
+	if (!report?.report_url) return "";
+
+	const expiresAt   = report.report_url_expires_at;
+	const scanId      = report.scan_id;
+	const studentId   = report.student_id;
+
+	let expiryHtml = "";
+	let refreshHtml = "";
+
+	if (expiresAt) {
+		const expiresDate  = new Date(expiresAt);
+		const expiresLocal = expiresDate.toLocaleString();
+		const isExpired    = Date.now() >= expiresDate.getTime();
+
+		if (isExpired) {
+			expiryHtml = `<p class="url-expired">Download link has expired. Click "Refresh link" to get a new one.</p>`;
+		} else {
+			expiryHtml = `<p class="url-expiry">Download link expires at: <strong>${escapeHtml(expiresLocal)}</strong></p>`;
+		}
+
+		// Show refresh button if pollStatus is available (loaded from app.js)
+		if (scanId && studentId && typeof window.pollStatus === "function") {
+			refreshHtml = `<button id="refresh-url-btn" type="button">Refresh link</button>`;
+		}
+	}
+
+	return `
+		<section class="result-download">
+			<a href="${escapeHtml(report.report_url)}" target="_blank" rel="noopener noreferrer" id="download-link">
+				Download full report (JSON)
+			</a>
+			${expiryHtml}
+			${refreshHtml}
+		</section>
+	`;
+}
+
+/**
+ * Attach the "Refresh link" button handler after the DOM has been updated.
+ * Calls window.pollStatus to get a fresh presigned URL, then re-renders.
+ */
+function attachRefreshHandler(report, container) {
+	const btn = container.querySelector("#refresh-url-btn");
+	if (!btn) return;
+
+	btn.addEventListener("click", async () => {
+		btn.disabled  = true;
+		btn.textContent = "Refreshing...";
+		try {
+			const fresh = await window.pollStatus(report.scan_id, report.student_id, {
+				maxWaitMs: 10_000,  // give up after 10 s if not DONE yet
+			});
+			renderScanResults(fresh, container);
+		} catch (err) {
+			btn.disabled    = false;
+			btn.textContent = "Refresh link";
+			alert("Could not refresh link: " + err.message);
+		}
+	});
+}
+
 function renderScanResults(report, target = "results") {
 	const container = typeof target === "string" ? document.getElementById(target) : target;
 	if (!container) return;
 
-	const findings = Array.isArray(report?.findings) ? report.findings : [];
-	const summary = normalizeSummary(report?.summary || {});
+	const findings  = Array.isArray(report?.findings) ? report.findings : [];
+	const summary   = normalizeSummary(report?.summary || {});
 	const vulnCount = Number(report?.vuln_count ?? findings.length);
-	const scanId = escapeHtml(report?.scan_id || "-");
-	const tool = escapeHtml(report?.tool || "-");
-	const language = escapeHtml(report?.language || "-");
+	const scanId    = escapeHtml(report?.scan_id || "-");
+	const tool      = escapeHtml(report?.tool || "-");
+	const language  = escapeHtml(report?.language || "-");
 
 	const rows = findings
 		.map((finding) => {
-			const severity = String(finding?.severity || "LOW").toUpperCase();
+			const severity   = String(finding?.severity || "LOW").toUpperCase();
 			const confidence = escapeHtml(finding?.confidence || "UNKNOWN");
-			const issue = escapeHtml(finding?.issue || "Unknown issue");
-			const line = Number(finding?.line ?? 0);
-			const snippet = escapeHtml(finding?.code_snippet || "");
-			const ruleId = escapeHtml(finding?.rule_id || "UNKNOWN");
+			const issue      = escapeHtml(finding?.issue || "Unknown issue");
+			const line       = Number(finding?.line ?? 0);
+			const snippet    = escapeHtml(finding?.code_snippet || "");
+			const ruleId     = escapeHtml(finding?.rule_id || "UNKNOWN");
 
 			return `
 				<tr>
@@ -70,6 +140,8 @@ function renderScanResults(report, target = "results") {
 			<span class="${severityBadgeClass("LOW")}">LOW ${summary.LOW}</span>
 		</section>
 
+		${buildDownloadSection(report)}
+
 		<section class="result-findings">
 			<table>
 				<thead>
@@ -88,6 +160,8 @@ function renderScanResults(report, target = "results") {
 			</table>
 		</section>
 	`;
+
+	attachRefreshHandler(report, container);
 }
 
 window.renderScanResults = renderScanResults;

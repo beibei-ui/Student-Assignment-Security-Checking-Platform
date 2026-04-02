@@ -8,6 +8,7 @@ so the frontend can fetch the report directly.
 """
 
 import logging
+from datetime import datetime, timedelta, timezone
 
 import boto3
 from botocore.exceptions import ClientError
@@ -33,10 +34,8 @@ def get_scan_status(scan_id: str, student_id: str, table_name: str, s3_bucket: s
 
     Returns a dict with:
       - status: PENDING | IN_PROGRESS | DONE | FAILED
-      - scan_id
-      - language
-      - created_at
-      - (when DONE) vuln_count, completed_at, report_url (presigned S3 URL)
+      - scan_id, language, created_at
+      - (when DONE) vuln_count, completed_at, report_url, report_url_expires_at
 
     Raises:
         ValueError  if scan_id not found or does not belong to student_id
@@ -68,6 +67,11 @@ def get_scan_status(scan_id: str, student_id: str, table_name: str, s3_bucket: s
         s3_key = item.get("s3_report_key")
         if s3_key:
             result["report_url"] = _generate_presigned_url(s3_bucket, s3_key)
+            # Tell the client exactly when this URL stops working so it can
+            # warn the user before they get a silent 403 from S3.
+            result["report_url_expires_at"] = (
+                datetime.now(timezone.utc) + timedelta(seconds=PRESIGNED_URL_EXPIRY)
+            ).isoformat()
 
     return result
 
