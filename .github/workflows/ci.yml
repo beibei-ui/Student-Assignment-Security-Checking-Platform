@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Lambda A: boto3 + pytest + moto (sqs, dynamodb, s3)
+      # moto[s3] is required because dispatcher.py now uploads code to S3
+      # before sending the SQS message (S3-staging pattern, issue #14).
+      - name: Install Lambda A dependencies
+        run: pip install -r sast-platform/lambda_a/requirements.txt "moto[s3]>=5.0.0"
+
+      # Lambda B: runtime deps only — bandit and semgrep are NOT installed.
+      # Unit tests mock subprocess.run so the actual scanner binaries are not
+      # needed.  Installing semgrep in CI would add ~5 min to every run.
+      - name: Install Lambda B test dependencies
+        run: pip install -r sast-platform/lambda_b/requirements-test.txt
+
+      - name: Run unit tests
+        run: |
+          cd sast-platform
+          python -m pytest tests/unit/ -v --tb=short
+        env:
+          # moto intercepts boto3 calls — no real AWS credentials needed.
+          AWS_DEFAULT_REGION: us-east-1
+          AWS_ACCESS_KEY_ID: testing
+          AWS_SECRET_ACCESS_KEY: testing
+
+      - name: Run integration tests
+        run: |
+          cd sast-platform
+          python -m pytest tests/integration/ -v --tb=short
+        env:
+          AWS_DEFAULT_REGION: us-east-1
+          AWS_ACCESS_KEY_ID: testing
+          AWS_SECRET_ACCESS_KEY: testing

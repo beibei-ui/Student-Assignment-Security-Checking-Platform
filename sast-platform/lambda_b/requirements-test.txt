@@ -1,0 +1,9 @@
+# Test-only dependencies for lambda_b.
+# Does NOT include bandit or semgrep — unit tests mock subprocess.run so the
+# actual scanner binaries are not needed in CI.  Install the full
+# requirements.txt only when building the container image for deployment.
+boto3>=1.28.0
+botocore>=1.31.0
+typing-extensions>=4.8.0
+pytest>=8.0.0
+moto[s3,sqs,dynamodb]>=5.0.0
