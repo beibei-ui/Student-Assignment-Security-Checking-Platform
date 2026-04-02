@@ -21,12 +21,17 @@ if _missing:
     raise RuntimeError(f"Required scanner binaries not found in PATH: {_missing}")
 
 from scanner import scan_code_with_timeout
-from result_parser import ResultParser
+from result_parser import normalize_result
 from s3_writer import write_scan_result_to_s3, get_s3_bucket_from_env, S3WriteError
 
 # Configure logging
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
+
+# Code size threshold for ECS fallback.
+# Submissions larger than this are offloaded to ECS Fargate instead of
+# being scanned inline, avoiding Lambda timeout/memory limits.
+LAMBDA_CODE_SIZE_LIMIT = 250_000  # ~250 KB
 
 # Initialize AWS clients
 dynamodb = boto3.resource('dynamodb')
@@ -66,6 +71,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         logger.info(f"Received {len(records)} SQS messages")
         
         for record in records:
+            s3_code_key = None  # ensure cleanup is possible even if message parsing fails
             try:
                 # Parse message
                 message_body = json.loads(record['body'])
@@ -87,7 +93,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                     s3_bucket_name=s3_bucket_name,
                     s3_code_key=s3_code_key,
                 )
-                
+
                 if result['success']:
                     successful_count += 1
                     logger.info(f"Scan task completed - scan_id: {scan_id}")
@@ -98,11 +104,14 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                         'error': result['error']
                     })
                     logger.error(f"Scan task failed - scan_id: {scan_id}, error: {result['error']}")
-                    
+
             except Exception as e:
                 failed_count += 1
                 error_msg = f"Failed to process SQS message: {str(e)}"
                 logger.error(error_msg)
+                # Clean up S3 upload if we got far enough to know the key but
+                # failed before process_scan_request could handle cleanup itself.
+                _delete_uploaded_code(s3_bucket_name, s3_code_key)
                 failed_messages.append({
                     'record_id': record.get('messageId', 'unknown'),
                     'error': error_msg
@@ -163,14 +172,40 @@ def process_scan_request(scan_id: str, language: str, student_id: str,
         logger.info(f"Fetching code from S3 - scan_id: {scan_id}, key: {s3_code_key}")
         code = _fetch_code_from_s3(s3_bucket_name, s3_code_key)
 
-        # Step 2: Execute security scan
+        # Route large submissions to ECS Fargate to avoid Lambda timeout/OOM.
+        # Use byte length — len(str) counts characters, not bytes.
+        code_bytes = len(code.encode('utf-8'))
+        if code_bytes > LAMBDA_CODE_SIZE_LIMIT:
+            logger.info(
+                f"Code size {code_bytes} bytes exceeds {LAMBDA_CODE_SIZE_LIMIT} limit "
+                f"— routing to ECS Fargate - scan_id: {scan_id}"
+            )
+            update_scan_status(table, student_id, scan_id, 'ECS_QUEUED')
+            ecs_result = handle_ecs_fallback(scan_id, language, student_id, s3_code_key)
+            if not ecs_result['success']:
+                # ECS launch failed — mark FAILED so the scan doesn't stay stuck in ECS_QUEUED
+                try:
+                    update_scan_status(table, student_id, scan_id, 'FAILED',
+                                       error_message=ecs_result['error'])
+                except Exception as db_err:
+                    logger.error(f"Failed to update FAILED status after ECS launch error - scan_id: {scan_id}, error: {str(db_err)}")
+            return ecs_result
+
+        # Step 2: Execute security scan (inline for small submissions)
         logger.info(f"Starting scan - scan_id: {scan_id}")
         raw_scan_result = scan_code_with_timeout(code, language, scan_id, timeout=300)
 
         # Step 3: Parse scan results
         logger.info(f"Parsing scan results - scan_id: {scan_id}")
-        parsed_result = ResultParser.parse_scan_result(raw_scan_result)
-        vuln_count = ResultParser.calculate_vuln_count(parsed_result)
+        if 'error' in raw_scan_result:
+            raise RuntimeError(f"Scanner error: {raw_scan_result['error']}")
+        parsed_result = normalize_result(
+            tool=raw_scan_result['tool'],
+            raw_output=raw_scan_result.get('raw_output', {}),
+            scan_id=scan_id,
+            language=language,
+        )
+        vuln_count = parsed_result['vuln_count']
 
         # Step 4: Write report to S3
         logger.info(f"Writing scan report to S3 - scan_id: {scan_id}")
@@ -303,35 +338,45 @@ def update_scan_status(table: Any, student_id: str, scan_id: str, status: str,
         raise
 
 
-def handle_ecs_fallback(scan_id: str, code: str, language: str, student_id: str) -> Dict[str, Any]:
+def handle_ecs_fallback(scan_id: str, language: str, student_id: str,
+                       s3_code_key: str) -> Dict[str, Any]:
     """
-    Handle ECS Fargate fallback logic for large files or complex scans
-    Used when Lambda memory is insufficient or execution time exceeds limit
-    
+    Launch an ECS Fargate task to handle a scan that is too large for Lambda.
+
+    The source code is referenced via s3_code_key (an S3 object key) rather
+    than being passed inline.  ECS container env var overrides are capped at
+    ~8 KB per entry, so passing raw code strings for large files would cause
+    the ECS API call to fail.  ecs_handler.py reads S3_CODE_KEY and fetches
+    the code from S3 directly.
+
     Args:
-        scan_id: Scan ID
-        code: Code content
-        language: Code language
-        student_id: Student ID
-        
+        scan_id:     Scan task ID.
+        language:    Programming language of the submission.
+        student_id:  Student who submitted the scan.
+        s3_code_key: S3 object key for the uploaded source code (set by
+                     Lambda A via S3-staging, PR #48).
+
     Returns:
-        ECS task launch result
+        Dict with 'success' bool and 'task_arn' or 'error'.
     """
+    if not s3_code_key:
+        logger.error(f"ECS fallback requires s3_code_key but none provided - scan_id: {scan_id}")
+        return {'success': False, 'error': 'ECS fallback requires s3_code_key (S3-staging not active)'}
+
     try:
-        ecs_client = boto3.client('ecs')
-        cluster_name = os.environ.get('ECS_CLUSTER_NAME', 'sast-platform-cluster')
+        ecs_client      = boto3.client('ecs')
+        cluster_name    = os.environ.get('ECS_CLUSTER_NAME', 'sast-platform-cluster')
         task_definition = os.environ.get('ECS_TASK_DEFINITION', 'sast-scanner-task')
-        
-        # Launch ECS task
+
         response = ecs_client.run_task(
             cluster=cluster_name,
             taskDefinition=task_definition,
             launchType='FARGATE',
             networkConfiguration={
                 'awsvpcConfiguration': {
-                    'subnets': os.environ.get('ECS_SUBNETS', '').split(','),
-                    'securityGroups': os.environ.get('ECS_SECURITY_GROUPS', '').split(','),
-                    'assignPublicIp': 'ENABLED'
+                    'subnets':          os.environ.get('ECS_SUBNETS', '').split(','),
+                    'securityGroups':   os.environ.get('ECS_SECURITY_GROUPS', '').split(','),
+                    'assignPublicIp':   'ENABLED',
                 }
             },
             overrides={
@@ -339,28 +384,30 @@ def handle_ecs_fallback(scan_id: str, code: str, language: str, student_id: str)
                     {
                         'name': 'scanner-container',
                         'environment': [
-                            {'name': 'SCAN_ID', 'value': scan_id},
-                            {'name': 'STUDENT_ID', 'value': student_id},
-                            {'name': 'LANGUAGE', 'value': language},
-                            {'name': 'CODE_CONTENT', 'value': code}
+                            {'name': 'SCAN_ID',      'value': scan_id},
+                            {'name': 'STUDENT_ID',   'value': student_id},
+                            {'name': 'LANGUAGE',     'value': language},
+                            # Pass the S3 key, not the raw code.
+                            # ecs_handler._fetch_code() downloads it from S3.
+                            {'name': 'S3_CODE_KEY',  'value': s3_code_key},
                         ]
                     }
                 ]
             }
         )
-        
+
         task_arn = response['tasks'][0]['taskArn']
         logger.info(f"ECS task launched - scan_id: {scan_id}, task_arn: {task_arn}")
-        
+
         return {
             'success': True,
             'task_arn': task_arn,
-            'message': 'ECS task launched, will complete scan asynchronously'
+            'message': 'ECS task launched, scan will complete asynchronously',
         }
-        
+
     except Exception as e:
         logger.error(f"ECS task launch failed - scan_id: {scan_id}, error: {str(e)}")
         return {
             'success': False,
-            'error': f"ECS task launch failed: {str(e)}"
+            'error': f"ECS task launch failed: {str(e)}",
         }

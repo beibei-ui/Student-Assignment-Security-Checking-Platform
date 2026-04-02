@@ -49,50 +49,55 @@ def create_scan_job(code: str, language: str, student_id: str,
     )
     logger.info("Code uploaded to S3: key=%s bucket=%s", s3_code_key, s3_bucket)
 
-    # --- Write to DynamoDB (status: PENDING) ---
-    # ConditionExpression prevents overwriting an existing record if scan_id is
-    # somehow reused (defensive guard against idempotency violations).
-    table = dynamodb.Table(table_name)
     try:
-        table.put_item(
-            Item={
-                "student_id":  student_id,
-                "scan_id":     scan_id,
-                "status":      "PENDING",
-                "language":    language,
-                "created_at":  timestamp,
-            },
-            ConditionExpression="attribute_not_exists(scan_id)",
-        )
-    except ClientError as e:
-        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            logger.warning("scan_id %s already exists — skipping duplicate write", scan_id)
-            return scan_id
-        raise
-    logger.info("DynamoDB record created: scan_id=%s student_id=%s", scan_id, student_id)
+        # --- Write to DynamoDB (status: PENDING) ---
+        # ConditionExpression prevents overwriting an existing record if scan_id
+        # is somehow reused (defensive guard against idempotency violations).
+        table = dynamodb.Table(table_name)
+        try:
+            table.put_item(
+                Item={
+                    "student_id":  student_id,
+                    "scan_id":     scan_id,
+                    "status":      "PENDING",
+                    "language":    language,
+                    "created_at":  timestamp,
+                },
+                ConditionExpression="attribute_not_exists(scan_id)",
+            )
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                logger.warning("scan_id %s already exists — skipping duplicate write", scan_id)
+                # Clean up the S3 upload we just created — it won't be processed.
+                try:
+                    s3.delete_object(Bucket=s3_bucket, Key=s3_code_key)
+                except Exception:
+                    logger.warning("Could not clean up S3 for duplicate scan_id=%s", scan_id)
+                return scan_id
+            raise
+        logger.info("DynamoDB record created: scan_id=%s student_id=%s", scan_id, student_id)
 
-    # --- Send to SQS (S3 key only — no raw code to stay within 256KB limit) ---
-    message = {
-        "scan_id":     scan_id,
-        "student_id":  student_id,
-        "language":    language,
-        "s3_code_key": s3_code_key,
-    }
-    try:
+        # --- Send to SQS (S3 key only — no raw code to stay within 256KB limit) ---
+        message = {
+            "scan_id":     scan_id,
+            "student_id":  student_id,
+            "language":    language,
+            "s3_code_key": s3_code_key,
+        }
         sqs.send_message(
             QueueUrl=sqs_url,
             MessageBody=json.dumps(message),
         )
+        logger.info("SQS message sent: scan_id=%s queue=%s", scan_id, sqs_url)
     except Exception:
-        # SQS send failed — Lambda B will never receive the message, so
+        # DynamoDB or SQS failed — Lambda B will never receive the message, so
         # _delete_uploaded_code in handler.py will never run.  Clean up the
         # S3 object here to prevent it from being orphaned.
-        logger.exception("SQS send failed, cleaning up S3 upload: key=%s", s3_code_key)
         try:
             s3.delete_object(Bucket=s3_bucket, Key=s3_code_key)
+            logger.warning("S3 upload cleaned up after DynamoDB/SQS failure: key=%s", s3_code_key)
         except Exception:
             logger.exception("S3 cleanup also failed: key=%s", s3_code_key)
         raise
-    logger.info("SQS message sent: scan_id=%s queue=%s", scan_id, sqs_url)
 
     return scan_id
