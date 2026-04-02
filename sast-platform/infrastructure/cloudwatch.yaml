@@ -14,16 +14,10 @@ Parameters:
     AllowedValues: [dev, staging, prod]
   SQSStackName:
     Type: String
-    Default: sast-sqs
-  LambdaAStackName:
-    Type: String
-    Default: sast-lambda-a
-  LambdaBStackName:
-    Type: String
-    Default: sast-lambda-b
+    Default: sast-platform-sqs
   DynamoDBStackName:
     Type: String
-    Default: sast-dynamodb
+    Default: sast-platform-dynamodb
   LambdaAFunctionName:
     Type: String
     Default: sast-lambda-a
@@ -144,7 +138,7 @@ Resources:
               - "/"
               - !ImportValue
                   Fn::Sub: "${SQSStackName}-DLQUrl"
-      Statistic: Sum
+      Statistic: Maximum
       Period: 60
       EvaluationPeriods: 1
       Threshold: 1

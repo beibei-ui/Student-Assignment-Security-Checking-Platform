@@ -219,9 +219,8 @@ deploy_stack "$STACK_CLOUDWATCH" "$INFRA_DIR/cloudwatch.yaml" \
   "ProjectName=$PROJECT_NAME" \
   "Environment=$ENVIRONMENT" \
   "SQSStackName=$STACK_SQS" \
-  "LambdaAStackName=$STACK_LAMBDA_A" \
-  "LambdaBStackName=$STACK_LAMBDA_B" \
-  "DynamoDBStackName=$STACK_DYNAMODB"
+  "DynamoDBStackName=$STACK_DYNAMODB" \
+  "LambdaAFunctionName=sast-lambda-a"
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""
