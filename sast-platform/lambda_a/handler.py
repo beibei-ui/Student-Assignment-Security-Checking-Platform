@@ -116,14 +116,12 @@ def _handle_get_status(event):
     try:
         result = get_scan_status(
             scan_id    = scan_id,
+            student_id = student_id,
             table_name = DYNAMODB_TABLE,
             s3_bucket  = S3_BUCKET,
-            student_id = student_id,
         )
     except ValueError as e:
         return _response(404, {"error": str(e)})
-    except PermissionError as e:
-        return _response(403, {"error": str(e)})
     except Exception:
         logger.exception("Failed to fetch scan status for scan_id=%s", scan_id)
         return _response(500, {"error": "Internal error. Please try again."})
