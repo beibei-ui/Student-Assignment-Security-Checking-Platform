@@ -4,8 +4,9 @@ Jingsi Zhang | CS6620 Group 9
 
 Entry point for the Lambda Function URL.
 Routes:
-  POST /scan    → validate input → dispatch to SQS + DynamoDB → return 202
-  GET  /status  → query DynamoDB → return scan status (+ presigned URL when DONE)
+  POST /scan      → validate input → dispatch to SQS + DynamoDB → return 202
+  GET  /status    → query DynamoDB → return scan status (+ presigned URL when DONE)
+  GET  /history   → query DynamoDB → return last 50 scans for a student
 """
 
 import json
@@ -16,6 +17,7 @@ from validator  import validate_scan_request, normalize
 from dispatcher import create_scan_job
 from status     import get_scan_status
 from auth       import lookup_student
+from history    import get_scan_history
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -32,12 +34,9 @@ AUTH_TABLE     = os.environ["AUTH_TABLE"]
 # ---------------------------------------------------------------------------
 
 def lambda_handler(event, context):
-    method = (
-        event.get("requestContext", {})
-             .get("http", {})
-             .get("method", "")
-             .upper()
-    )
+    http_ctx = event.get("requestContext", {}).get("http", {})
+    method   = http_ctx.get("method", "").upper()
+    path     = http_ctx.get("path", "")
 
     # CORS preflight — no auth required
     if method == "OPTIONS":
@@ -47,6 +46,8 @@ def lambda_handler(event, context):
         return _handle_post_scan(event)
 
     if method == "GET":
+        if path == "/history":
+            return _handle_get_history(event)
         return _handle_get_status(event)
 
     return _response(405, {"error": f"Method '{method}' not allowed."})
@@ -136,6 +137,32 @@ def _handle_get_status(event):
         return _response(500, {"error": "Internal error. Please try again."})
 
     return _response(200, result)
+
+
+# ---------------------------------------------------------------------------
+# GET /history?student_id=xxx
+# ---------------------------------------------------------------------------
+
+def _handle_get_history(event):
+    # Authenticate
+    try:
+        student_id = _resolve_student(event)
+    except Exception:
+        logger.exception("Auth table lookup failed")
+        return _response(500, {"error": "Internal error. Please try again."})
+    if not student_id:
+        return _response(401, {"error": "Missing or invalid X-Student-Key header."})
+
+    try:
+        scans = get_scan_history(
+            student_id = student_id,
+            table_name = DYNAMODB_TABLE,
+        )
+    except Exception:
+        logger.exception("Failed to fetch scan history for student_id=%s", student_id)
+        return _response(500, {"error": "Internal error. Please try again."})
+
+    return _response(200, {"student_id": student_id, "scans": scans})
 
 
 # ---------------------------------------------------------------------------
