@@ -69,13 +69,11 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
                 logger.info(f"Started processing scan task - scan_id: {scan_id}, language: {language}")
 
-                # Fetch code from S3
-                code = _fetch_code_from_s3(s3_bucket_name, s3_code_key)
-
-                # Execute scanning
+                # process_scan_request fetches code from S3 internally so that
+                # _delete_uploaded_code is guaranteed to run on every exit path,
+                # including S3 fetch failures.
                 result = process_scan_request(
                     scan_id=scan_id,
-                    code=code,
                     language=language,
                     student_id=student_id,
                     table=table,
@@ -129,24 +127,32 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         }
 
 
-def process_scan_request(scan_id: str, code: str, language: str, student_id: str,
+def process_scan_request(scan_id: str, language: str, student_id: str,
                         table: Any, s3_bucket_name: str,
                         s3_code_key: str = None) -> Dict[str, Any]:
     """
     Process single scan request.
-    Deletes the uploaded code from S3 after scan completes (success or failure).
+
+    Fetches source code from S3 internally so that _delete_uploaded_code is
+    guaranteed to run on every exit path — including S3 fetch failures.
+    Previously, fetching outside this function meant a fetch error left the
+    uploaded object in S3 permanently.
     """
     try:
-        # Step 1: Execute security scan
+        # Step 1: Fetch source code from S3
+        logger.info(f"Fetching code from S3 - scan_id: {scan_id}, key: {s3_code_key}")
+        code = _fetch_code_from_s3(s3_bucket_name, s3_code_key)
+
+        # Step 2: Execute security scan
         logger.info(f"Starting scan - scan_id: {scan_id}")
         raw_scan_result = scan_code_with_timeout(code, language, scan_id, timeout=300)
 
-        # Step 2: Parse scan results
+        # Step 3: Parse scan results
         logger.info(f"Parsing scan results - scan_id: {scan_id}")
         parsed_result = ResultParser.parse_scan_result(raw_scan_result)
         vuln_count = ResultParser.calculate_vuln_count(parsed_result)
 
-        # Step 3: Write to S3
+        # Step 4: Write report to S3
         logger.info(f"Writing scan report to S3 - scan_id: {scan_id}")
         s3_key, presigned_url = write_scan_result_to_s3(
             bucket_name=s3_bucket_name,
@@ -154,7 +160,7 @@ def process_scan_request(scan_id: str, code: str, language: str, student_id: str
             report_data=parsed_result
         )
 
-        # Step 4: Update DynamoDB status
+        # Step 5: Update DynamoDB status
         logger.info(f"Updating DynamoDB status - scan_id: {scan_id}")
         update_scan_status(
             table=table,
@@ -165,7 +171,7 @@ def process_scan_request(scan_id: str, code: str, language: str, student_id: str
             s3_report_key=s3_key
         )
 
-        # Step 5: Delete uploaded source code — data privacy cleanup
+        # Step 6: Delete uploaded source code — data privacy cleanup
         _delete_uploaded_code(s3_bucket_name, s3_code_key)
 
         logger.info(f"Scan task completed - scan_id: {scan_id}, found {vuln_count} vulnerabilities")

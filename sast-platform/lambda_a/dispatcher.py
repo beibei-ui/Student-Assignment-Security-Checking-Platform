@@ -66,10 +66,21 @@ def create_scan_job(code: str, language: str, student_id: str,
         "language":    language,
         "s3_code_key": s3_code_key,
     }
-    sqs.send_message(
-        QueueUrl=sqs_url,
-        MessageBody=json.dumps(message),
-    )
+    try:
+        sqs.send_message(
+            QueueUrl=sqs_url,
+            MessageBody=json.dumps(message),
+        )
+    except Exception:
+        # SQS send failed — Lambda B will never receive the message, so
+        # _delete_uploaded_code in handler.py will never run.  Clean up the
+        # S3 object here to prevent it from being orphaned.
+        logger.exception("SQS send failed, cleaning up S3 upload: key=%s", s3_code_key)
+        try:
+            s3.delete_object(Bucket=s3_bucket, Key=s3_code_key)
+        except Exception:
+            logger.exception("S3 cleanup also failed: key=%s", s3_code_key)
+        raise
     logger.info("SQS message sent: scan_id=%s queue=%s", scan_id, sqs_url)
 
     return scan_id
