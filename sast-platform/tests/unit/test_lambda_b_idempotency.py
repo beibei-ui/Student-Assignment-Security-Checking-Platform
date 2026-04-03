@@ -159,3 +159,69 @@ class TestDuplicateSkipped:
             )
 
         mock_scan.assert_not_called()
+
+
+# ── lambda_handler batchItemFailures format ───────────────────────────────────
+
+def _make_sqs_event(*message_ids):
+    """Build a minimal SQS event with the given messageIds."""
+    return {
+        "Records": [
+            {
+                "messageId": mid,
+                "body": '{"scan_id":"scan-x","s3_code_key":"uploads/x.txt","language":"python","student_id":"neu9"}',
+            }
+            for mid in message_ids
+        ]
+    }
+
+
+class TestLambdaHandlerBatchFailures:
+
+    def test_all_succeed_returns_empty_batch_failures(self):
+        """When every record succeeds, batchItemFailures must be empty."""
+        event = _make_sqs_event("msg-1", "msg-2")
+        with mock.patch.object(lambda_b_handler, "process_scan_request",
+                               return_value={"success": True}):
+            resp = lambda_b_handler.lambda_handler(event, None)
+        assert resp == {"batchItemFailures": []}
+
+    def test_failed_record_appears_in_batch_failures(self):
+        """A record whose process_scan_request returns success=False must be retried."""
+        event = _make_sqs_event("msg-fail", "msg-ok")
+
+        # First call (msg-fail) → failure; second call (msg-ok) → success.
+        results = [{"success": False, "error": "oops"}, {"success": True}]
+        with mock.patch.object(lambda_b_handler, "process_scan_request",
+                               side_effect=results):
+            resp = lambda_b_handler.lambda_handler(event, None)
+
+        assert {"itemIdentifier": "msg-fail"} in resp["batchItemFailures"]
+        assert {"itemIdentifier": "msg-ok"} not in resp["batchItemFailures"]
+
+    def test_exception_in_record_adds_to_batch_failures(self):
+        """An unhandled exception for one record adds it to batchItemFailures."""
+        event = _make_sqs_event("msg-exc")
+        with mock.patch.object(lambda_b_handler, "process_scan_request",
+                               side_effect=RuntimeError("boom")), \
+             mock.patch.object(lambda_b_handler, "_delete_uploaded_code"), \
+             mock.patch.object(lambda_b_handler, "update_scan_status"):
+            resp = lambda_b_handler.lambda_handler(event, None)
+        assert resp["batchItemFailures"] == [{"itemIdentifier": "msg-exc"}]
+
+    def test_setup_failure_marks_all_records_failed(self):
+        """If env var setup fails, every record in the batch must be retried."""
+        event = _make_sqs_event("msg-a", "msg-b", "msg-c")
+        with mock.patch.object(lambda_b_handler, "get_s3_bucket_from_env",
+                               side_effect=ValueError("S3_BUCKET_NAME is not set")):
+            resp = lambda_b_handler.lambda_handler(event, None)
+        ids = {f["itemIdentifier"] for f in resp["batchItemFailures"]}
+        assert ids == {"msg-a", "msg-b", "msg-c"}
+
+    def test_response_has_only_batch_item_failures_key(self):
+        """Response must not include the old statusCode/body keys."""
+        event = _make_sqs_event("msg-1")
+        with mock.patch.object(lambda_b_handler, "process_scan_request",
+                               return_value={"success": True}):
+            resp = lambda_b_handler.lambda_handler(event, None)
+        assert set(resp.keys()) == {"batchItemFailures"}
