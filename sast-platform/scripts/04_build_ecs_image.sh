@@ -91,7 +91,7 @@ ensure_ecr_repository() {
         aws ecr create-repository \
             --repository-name "$ECR_REPOSITORY_NAME" \
             --region "$AWS_REGION" \
-            --image-scanning-configuration scanOnPush=true \
+            --image-scanning-configuration scanOnPush=false \
             --image-tag-mutability MUTABLE > /dev/null
         
         # 设置生命周期策略
