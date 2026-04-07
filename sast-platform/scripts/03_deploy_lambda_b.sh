@@ -16,6 +16,7 @@ PROJECT_NAME="${PROJECT_NAME:-sast-platform}"
 ENVIRONMENT="${ENVIRONMENT:-dev}"
 AWS_REGION="${AWS_REGION:-us-east-1}"
 LAMBDA_FUNCTION_NAME="${PROJECT_NAME}-${ENVIRONMENT}-scanner"
+CODE_BUCKET="${CODE_BUCKET:-}"
 
 # 目录设置
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -171,6 +172,12 @@ update_lambda_function() {
             --function-name "$LAMBDA_FUNCTION_NAME" \
             --zip-file "fileb://$zip_file" \
             --region "$AWS_REGION" > /dev/null
+
+        # Sync to CODE_BUCKET so CloudFormation re-deployments stay in sync.
+        if [[ -n "$CODE_BUCKET" ]]; then
+            echo "同步部署包到 CODE_BUCKET: s3://$CODE_BUCKET/lambda_b.zip"
+            aws s3 cp "$zip_file" "s3://$CODE_BUCKET/lambda_b.zip" --region "$AWS_REGION"
+        fi
     fi
     
     echo -e "${GREEN}✅ Lambda 函数代码更新完成${NC}"
@@ -201,6 +208,13 @@ update_lambda_via_s3() {
         --region "$AWS_REGION" > /dev/null
     
     echo "通过 S3 更新完成"
+
+    # Sync to CODE_BUCKET/lambda_b.zip so CloudFormation re-deployments
+    # pick up the latest code (must match CodeBucket param in lambda_b.yaml).
+    if [[ -n "$CODE_BUCKET" ]]; then
+        echo "同步部署包到 CODE_BUCKET: s3://$CODE_BUCKET/lambda_b.zip"
+        aws s3 cp "$zip_file" "s3://$CODE_BUCKET/lambda_b.zip" --region "$AWS_REGION"
+    fi
 }
 
 # 更新函数配置（如果需要）

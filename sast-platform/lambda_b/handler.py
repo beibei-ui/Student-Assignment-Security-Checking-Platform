@@ -191,15 +191,29 @@ def process_scan_request(scan_id: str, language: str, student_id: str,
                 return {"success": True, "scan_id": scan_id, "skipped": True}
             raise
 
+        # Non-Python languages (Java, JS, TS, Go, Ruby, C, C++) require Semgrep,
+        # which is not bundled in the Lambda zip (too large). Route them to ECS
+        # Fargate where the container image has Semgrep installed.
+        SEMGREP_LANGUAGES = {'java', 'javascript', 'js', 'typescript', 'go', 'ruby', 'c', 'cpp'}
+        if language.lower() in SEMGREP_LANGUAGES:
+            logger.info(
+                f"Language '{language}' requires Semgrep — routing to ECS Fargate - scan_id: {scan_id}"
+            )
+            update_scan_status(table, student_id, scan_id, 'ECS_QUEUED')
+            ecs_result = handle_ecs_fallback(scan_id, language, student_id, s3_code_key)
+            if not ecs_result['success']:
+                try:
+                    update_scan_status(table, student_id, scan_id, 'FAILED',
+                                       error_message=ecs_result['error'])
+                except Exception as db_err:
+                    logger.error(f"Failed to update FAILED status after ECS launch error - scan_id: {scan_id}, error: {str(db_err)}")
+            return ecs_result
+
         # Step 1: Fetch source code from S3
         logger.info(f"Fetching code from S3 - scan_id: {scan_id}, key: {s3_code_key}")
         code = _fetch_code_from_s3(s3_bucket_name, s3_code_key)
 
-        # Route to ECS Fargate when:
-        #   1. Code size exceeds Lambda limit (> 250 KB), OR
-        #   2. Language requires Semgrep (non-Python), which is not packaged in
-        #      the Lambda zip due to size constraints.
-        # Use byte length — len(str) counts characters, not bytes.
+        # Route large Python submissions to ECS to avoid Lambda timeout/OOM.
         code_bytes = len(code.encode('utf-8'))
         semgrep_languages = {'java', 'javascript', 'typescript', 'go', 'ruby', 'c', 'cpp'}
         needs_ecs = (code_bytes > LAMBDA_CODE_SIZE_LIMIT) or (language.lower() in semgrep_languages)
@@ -213,7 +227,6 @@ def process_scan_request(scan_id: str, language: str, student_id: str,
             update_scan_status(table, student_id, scan_id, 'ECS_QUEUED')
             ecs_result = handle_ecs_fallback(scan_id, language, student_id, s3_code_key)
             if not ecs_result['success']:
-                # ECS launch failed — mark FAILED so the scan doesn't stay stuck in ECS_QUEUED
                 try:
                     update_scan_status(table, student_id, scan_id, 'FAILED',
                                        error_message=ecs_result['error'])
