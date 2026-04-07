@@ -33,8 +33,6 @@ SQS_QUEUE_URL  = os.environ["SQS_QUEUE_URL"]
 DYNAMODB_TABLE = os.environ["DYNAMODB_TABLE"]
 S3_BUCKET      = os.environ["S3_BUCKET"]
 
-ANONYMOUS_ID = "anonymous"
-
 
 # ---------------------------------------------------------------------------
 # Main handler
@@ -69,6 +67,9 @@ def _handle_post_scan(event):
     except json.JSONDecodeError:
         return _response(400, {"error": "Request body must be valid JSON."})
 
+    # Extract student_id from body; fall back to "anonymous" if omitted
+    student_id = str(body.get("student_id", "")).strip() or "anonymous"
+
     # Validate
     ok, error_msg = validate_scan_request(body)
     if not ok:
@@ -82,7 +83,7 @@ def _handle_post_scan(event):
         scan_id = create_scan_job(
             code       = clean["code"],
             language   = clean["language"],
-            student_id = ANONYMOUS_ID,
+            student_id = student_id,
             sqs_url    = SQS_QUEUE_URL,
             table_name = DYNAMODB_TABLE,
             s3_bucket  = S3_BUCKET,
@@ -91,7 +92,7 @@ def _handle_post_scan(event):
         logger.exception("Failed to dispatch scan job")
         return _response(500, {"error": "Internal error. Please try again."})
 
-    logger.info("Scan job created: scan_id=%s", scan_id)
+    logger.info("Scan job created: scan_id=%s student_id=%s", scan_id, student_id)
     return _response(202, {
         "scan_id": scan_id,
         "status":  "PENDING",
@@ -104,8 +105,9 @@ def _handle_post_scan(event):
 # ---------------------------------------------------------------------------
 
 def _handle_get_status(event):
-    params  = event.get("queryStringParameters") or {}
-    scan_id = params.get("scan_id", "").strip()
+    params     = event.get("queryStringParameters") or {}
+    scan_id    = params.get("scan_id", "").strip()
+    student_id = params.get("student_id", "").strip() or "anonymous"
 
     if not scan_id:
         return _response(400, {"error": "Query parameter 'scan_id' is required."})
@@ -113,7 +115,7 @@ def _handle_get_status(event):
     try:
         result = get_scan_status(
             scan_id    = scan_id,
-            student_id = ANONYMOUS_ID,
+            student_id = student_id,
             table_name = DYNAMODB_TABLE,
             s3_bucket  = S3_BUCKET,
         )
