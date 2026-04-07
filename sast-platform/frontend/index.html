@@ -47,10 +47,10 @@
     <!-- Nav -->
     <nav class="sidebar-nav">
       <a class="nav-item active" data-view="scanner" onclick="switchView('scanner')">
-        <span class="nav-icon">⌨</span> Scanner
+        Scanner
       </a>
       <a class="nav-item" data-view="results" onclick="switchView('results')">
-        <span class="nav-icon">📋</span> Results &amp; History
+        Results &amp; History
       </a>
     </nav>
 
@@ -58,7 +58,7 @@
     <div class="sidebar-student">
       <div class="student-id-label">Student ID</div>
       <input type="text" id="student-id" class="student-id-input"
-             placeholder="e.g. zhang.jings" autocomplete="off" />
+             placeholder="e.g. 001234567" autocomplete="off" />
       <div class="student-id-hint" id="student-id-hint">Auto-saved · history persists across sessions</div>
     </div>
 
@@ -93,12 +93,6 @@
             <span class="panel-dot yellow"></span>
             <span class="panel-dot green"></span>
             <span class="panel-label">Code Input</span>
-          </div>
-
-          <div class="form-row">
-            <label>Student ID</label>
-            <input id="student-id" class="select" type="text" placeholder="e.g. zhang.jings"
-                   oninput="saveStudentId(this.value)" autocomplete="off" />
           </div>
 
           <div class="form-row">
