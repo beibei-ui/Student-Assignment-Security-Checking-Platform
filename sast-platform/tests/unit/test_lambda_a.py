@@ -1,10 +1,8 @@
 """
 test_lambda_a.py — Lambda A Unit Tests
-Jingsi Zhang | CS6620 Group 9
 
-Updated for PR #37 auth contract:
-- student_id is no longer in the request body (resolved from X-Student-Key header)
-- handler._resolve_student is mocked so tests don't hit DynamoDB
+student_id is read directly from the request body (POST) or query params (GET).
+No API key or DynamoDB auth lookup required.
 """
 
 import sys
@@ -19,7 +17,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lambda_a
 os.environ["SQS_QUEUE_URL"]  = "https://sqs.us-east-1.amazonaws.com/123456789/test-queue"
 os.environ["DYNAMODB_TABLE"] = "sast-scans-test"
 os.environ["S3_BUCKET"]      = "sast-reports-test"
-os.environ["AUTH_TABLE"]     = "student-auth-test"
 
 # Mock boto3 before importing handler
 sys.modules["boto3"]                     = mock.MagicMock()
@@ -49,7 +46,6 @@ print("=" * 60)
 
 
 # ── Validator: 11 cases ──────────────────────────────────
-# student_id is no longer validated here — identity comes from the auth header.
 print("\nValidator Tests (11 cases)")
 print("-" * 60)
 
@@ -63,28 +59,28 @@ ok, _ = validate_scan_request({"code": "console.log()", "language": "javascript"
 check("valid javascript", ok)
 
 ok, _ = validate_scan_request({"language": "python"})
-check("missing code → invalid", not ok)
+check("missing code -> invalid", not ok)
 
 ok, _ = validate_scan_request({"code": "   ", "language": "python"})
-check("empty code → invalid", not ok)
+check("empty code -> invalid", not ok)
 
 ok, _ = validate_scan_request({"code": 12345, "language": "python"})
-check("code not a string → invalid", not ok)
+check("code not a string -> invalid", not ok)
 
 ok, _ = validate_scan_request({"code": "x" * (1024 * 1024 + 1), "language": "python"})
-check("code exceeds 1 MB → invalid", not ok)
+check("code exceeds 1 MB -> invalid", not ok)
 
 ok, _ = validate_scan_request({"code": "x=1"})
-check("missing language → invalid", not ok)
+check("missing language -> invalid", not ok)
 
 ok, _ = validate_scan_request({"code": "x=1", "language": "cobol"})
-check("unsupported language (cobol) → invalid", not ok)
+check("unsupported language (cobol) -> invalid", not ok)
 
 ok, _ = validate_scan_request({"code": "print(1)", "language": "Python"})
-check("language case-insensitive (Python → python)", ok)
+check("language case-insensitive (Python -> python)", ok)
 
 ok, _ = validate_scan_request({})
-check("empty body → invalid", not ok)
+check("empty body -> invalid", not ok)
 
 
 # ── Normalize: 1 case ────────────────────────────────────
@@ -119,70 +115,69 @@ print("-" * 60)
 # OPTIONS — no auth required
 event = {"requestContext": {"http": {"method": "OPTIONS"}}, "body": None}
 resp = handler.lambda_handler(event, None)
-check("OPTIONS preflight → 200", resp["statusCode"] == 200)
+check("OPTIONS preflight -> 200", resp["statusCode"] == 200)
 
 # Unsupported method
 event = {"requestContext": {"http": {"method": "DELETE"}}, "body": None}
 resp = handler.lambda_handler(event, None)
-check("unsupported method → 405", resp["statusCode"] == 405)
+check("unsupported method -> 405", resp["statusCode"] == 405)
 
-# POST — missing X-Student-Key header → 401
+# POST — invalid JSON body -> 400
+event = {"requestContext": {"http": {"method": "POST"}},
+         "headers": {},
+         "body": "not-json"}
+resp = handler.lambda_handler(event, None)
+check("POST invalid JSON -> 400", resp["statusCode"] == 400)
+
+# POST — empty code -> 400
+event = {"requestContext": {"http": {"method": "POST"}},
+         "headers": {},
+         "body": json.dumps({"code": "", "language": "python"})}
+resp = handler.lambda_handler(event, None)
+check("POST empty code -> 400", resp["statusCode"] == 400)
+
+# POST — valid request with student_id -> 202
+event = {"requestContext": {"http": {"method": "POST"}},
+         "headers": {},
+         "body": json.dumps({"code": "print(1)", "language": "python", "student_id": "zhang.jings"})}
+with mock.patch("handler.create_scan_job", return_value="scan-abc123"):
+    resp = handler.lambda_handler(event, None)
+check("POST valid request with student_id -> 202", resp["statusCode"] == 202)
+
+# POST — valid request without student_id (anonymous fallback) -> 202
 event = {"requestContext": {"http": {"method": "POST"}},
          "headers": {},
          "body": json.dumps({"code": "print(1)", "language": "python"})}
-with mock.patch.object(handler, "_resolve_student", return_value=None):
+with mock.patch("handler.create_scan_job", return_value="scan-xyz789") as mock_job:
     resp = handler.lambda_handler(event, None)
-check("POST missing/invalid X-Student-Key → 401", resp["statusCode"] == 401)
+    call_kwargs = mock_job.call_args
+check("POST without student_id uses 'anonymous' -> 202",
+      resp["statusCode"] == 202 and call_kwargs.kwargs.get("student_id") == "anonymous")
 
-# POST — invalid JSON body → 400 (auth passes, body parse fails)
-event = {"requestContext": {"http": {"method": "POST"}},
-         "headers": {"x-student-key": "valid-key"},
-         "body": "not-json"}
-with mock.patch.object(handler, "_resolve_student", return_value="neu123"):
+# GET — missing scan_id -> 400
+event = {"requestContext": {"http": {"method": "GET"}},
+         "headers": {},
+         "queryStringParameters": {}}
+resp = handler.lambda_handler(event, None)
+check("GET missing scan_id -> 400", resp["statusCode"] == 400)
+
+# GET — scan not found -> 404
+event = {"requestContext": {"http": {"method": "GET"}},
+         "headers": {},
+         "queryStringParameters": {"scan_id": "scan-missing", "student_id": "zhang.jings"}}
+with mock.patch("handler.get_scan_status", side_effect=ValueError("not found")):
     resp = handler.lambda_handler(event, None)
-check("POST invalid JSON → 400", resp["statusCode"] == 400)
+check("GET scan not found -> 404", resp["statusCode"] == 404)
 
-# POST — empty code → 400
-event = {"requestContext": {"http": {"method": "POST"}},
-         "headers": {"x-student-key": "valid-key"},
-         "body": json.dumps({"code": "", "language": "python"})}
-with mock.patch.object(handler, "_resolve_student", return_value="neu123"):
-    resp = handler.lambda_handler(event, None)
-check("POST empty code → 400", resp["statusCode"] == 400)
-
-# POST — valid request → 202
-event = {"requestContext": {"http": {"method": "POST"}},
-         "headers": {"x-student-key": "valid-key"},
-         "body": json.dumps({"code": "print(1)", "language": "python"})}
-with mock.patch.object(handler, "_resolve_student", return_value="neu123"), \
-     mock.patch("handler.create_scan_job", return_value="scan-abc123"):
-    resp = handler.lambda_handler(event, None)
-check("POST valid request → 202", resp["statusCode"] == 202)
-
-# GET — missing X-Student-Key header → 401
+# GET — no student_id param falls back to anonymous
 event = {"requestContext": {"http": {"method": "GET"}},
          "headers": {},
          "queryStringParameters": {"scan_id": "scan-abc"}}
-with mock.patch.object(handler, "_resolve_student", return_value=None):
+with mock.patch("handler.get_scan_status", return_value={"status": "DONE"}) as mock_status:
     resp = handler.lambda_handler(event, None)
-check("GET missing/invalid X-Student-Key → 401", resp["statusCode"] == 401)
-
-# GET — missing scan_id → 400
-event = {"requestContext": {"http": {"method": "GET"}},
-         "headers": {"x-student-key": "valid-key"},
-         "queryStringParameters": {}}
-with mock.patch.object(handler, "_resolve_student", return_value="neu123"):
-    resp = handler.lambda_handler(event, None)
-check("GET missing scan_id → 400", resp["statusCode"] == 400)
-
-# GET — scan not found / wrong owner → 404
-event = {"requestContext": {"http": {"method": "GET"}},
-         "headers": {"x-student-key": "valid-key"},
-         "queryStringParameters": {"scan_id": "scan-missing"}}
-with mock.patch.object(handler, "_resolve_student", return_value="neu123"), \
-     mock.patch("handler.get_scan_status", side_effect=ValueError("not found")):
-    resp = handler.lambda_handler(event, None)
-check("GET scan not found → 404", resp["statusCode"] == 404)
+    call_kwargs = mock_status.call_args
+check("GET without student_id uses 'anonymous'",
+      resp["statusCode"] == 200 and call_kwargs.kwargs.get("student_id") == "anonymous")
 
 
 # ── Summary ──────────────────────────────────────────────

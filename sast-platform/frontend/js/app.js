@@ -35,6 +35,16 @@ let _pollDeadline    = null;
 let _currentInterval = POLL_INITIAL_MS;
 let _reportUrl       = null;
 
+// ── Student ID (localStorage) ─────────────────────────────────────────────────
+
+function getStudentId() {
+  return (document.getElementById("student-id")?.value || "").trim() || "anonymous";
+}
+
+function saveStudentId(value) {
+  localStorage.setItem("sast_student_id", value.trim());
+}
+
 // ── View switching ────────────────────────────────────────────────────────────
 
 function switchView(name) {
@@ -191,7 +201,7 @@ async function poll(scanId) {
   let data;
   try {
     const res = await fetch(
-      `${API_BASE_URL}/status?scan_id=${encodeURIComponent(scanId)}`
+      `${API_BASE_URL}/status?scan_id=${encodeURIComponent(scanId)}&student_id=${encodeURIComponent(getStudentId())}`
     );
     data = await res.json().catch(() => ({}));
   } catch (_) {
@@ -261,7 +271,7 @@ async function refreshReportLink() {
   dismissError();
   try {
     const res  = await fetch(
-      `${API_BASE_URL}/status?scan_id=${encodeURIComponent(_currentScanId)}`
+      `${API_BASE_URL}/status?scan_id=${encodeURIComponent(_currentScanId)}&student_id=${encodeURIComponent(getStudentId())}`
     );
     const data = await res.json().catch(() => ({}));
     if (data.report_url) {
@@ -411,7 +421,7 @@ function dismissError() {
 
 window.pollStatus = async function pollStatus(scanId) {
   const res = await fetch(
-    `${API_BASE_URL}/status?scan_id=${encodeURIComponent(scanId)}`
+    `${API_BASE_URL}/status?scan_id=${encodeURIComponent(scanId)}&student_id=${encodeURIComponent(getStudentId())}`
   );
   if (!res.ok) throw new Error(`Status request failed (${res.status})`);
   return res.json();
