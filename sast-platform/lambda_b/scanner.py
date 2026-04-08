@@ -183,14 +183,18 @@ class SecurityScanner:
                 cwd=self.temp_dir
             )
 
-            # Semgrep return codes
+            # Semgrep return codes: 0=no findings, 1=findings found, >=2=error
             if result.returncode >= 2:
-                raise RuntimeError(f"Semgrep execution failed: {result.stderr}")
+                raise RuntimeError(f"Semgrep execution failed (rc={result.returncode}): {result.stderr}")
 
             # gets JSON output
             if result.stdout.strip():
                 semgrep_output = json.loads(result.stdout)
             else:
+                # Empty stdout with rc<2 means either no findings or semgrep crashed
+                # Log stderr to help diagnose silent failures
+                if result.stderr.strip():
+                    logger.warning("Semgrep stderr: %s", result.stderr[:500])
                 semgrep_output = {"results": []}
 
             results = semgrep_output.get('results', [])

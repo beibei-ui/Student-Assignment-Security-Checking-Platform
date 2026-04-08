@@ -1,42 +1,36 @@
 # Multi-stage build for security scanning tools
-# Stage 1: Build Semgrep + download rules at build time (no internet needed at runtime)
-FROM python:3.12-slim as semgrep-builder
+# Stage 1: Install bandit + semgrep together so pip resolves shared deps
+#           (separate stages caused typing_extensions version conflict)
+FROM python:3.12-slim as tools-builder
 
-# Install system dependencies for building
 RUN apt-get update && apt-get install -y \
     git \
     curl \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Semgrep
-RUN pip install --no-cache-dir semgrep>=1.45.0
+# Install both tools in one pip call so pip picks compatible dep versions
+RUN pip install --no-cache-dir \
+    "bandit[toml]>=1.7.5" \
+    "semgrep>=1.45.0"
 
-# Download comprehensive rules during image build so the container
-# does not need outbound internet access at scan time.
-# Stores each ruleset as a separate file; scanner uses the directory.
+# Download comprehensive rules at build time (no internet needed at runtime).
+# Stores each ruleset as a separate yaml; scanner.py uses the directory.
 RUN mkdir -p /semgrep-rules && \
     curl -sSf "https://semgrep.dev/c/p/javascript"    -o /semgrep-rules/javascript.yaml && \
     curl -sSf "https://semgrep.dev/c/p/owasp-top-ten" -o /semgrep-rules/owasp.yaml && \
     curl -sSf "https://semgrep.dev/c/p/secrets"       -o /semgrep-rules/secrets.yaml && \
     echo "Rules downloaded:" && ls -lh /semgrep-rules/
 
-# Stage 2: Build Bandit
-FROM python:3.12-slim as bandit-builder
-
-# Install Bandit
-RUN pip install --no-cache-dir bandit[toml]>=1.7.5
-
-# Stage 3: Final runtime image
+# Stage 2: Final runtime image
 FROM python:3.12-slim
 
-# Set environment variables
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Create non-root user for security
-RUN groupadd -r scanner && useradd -r -g scanner scanner
+# Create non-root user for security (with home dir so semgrep can write state)
+RUN groupadd -r scanner && useradd -r -g scanner -m -d /home/scanner scanner
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -46,15 +40,12 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
-# Copy tools from builder stages
-COPY --from=semgrep-builder /usr/local/bin/semgrep /usr/local/bin/semgrep
-# pysemgrep is required by semgrep 1.45+ (semgrep calls pysemgrep internally)
-COPY --from=semgrep-builder /usr/local/bin/pysemgrep /usr/local/bin/pysemgrep
-COPY --from=semgrep-builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
-# Copy pre-downloaded Semgrep rules (no internet needed at scan time)
-COPY --from=semgrep-builder /semgrep-rules /semgrep-rules
-COPY --from=bandit-builder /usr/local/bin/bandit /usr/local/bin/bandit
-COPY --from=bandit-builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+# Copy tools and rules from builder
+COPY --from=tools-builder /usr/local/bin/semgrep    /usr/local/bin/semgrep
+COPY --from=tools-builder /usr/local/bin/pysemgrep  /usr/local/bin/pysemgrep
+COPY --from=tools-builder /usr/local/bin/bandit     /usr/local/bin/bandit
+COPY --from=tools-builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+COPY --from=tools-builder /semgrep-rules /semgrep-rules
 
 # Install additional Python dependencies + Lambda Runtime Interface Client
 COPY requirements.txt /tmp/requirements.txt
@@ -80,7 +71,7 @@ USER scanner
 # Set up PATH to ensure tools are accessible
 ENV PATH="/usr/local/bin:${PATH}"
 
-# Health check (used by ECS; Lambda ignores it)
+# Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD python -c "import subprocess; subprocess.run(['bandit', '--version'], check=True); subprocess.run(['semgrep', '--version'], check=True)" || exit 1
 
