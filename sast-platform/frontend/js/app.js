@@ -164,6 +164,8 @@ async function handleSubmit() {
     const data = await res.json().catch(() => ({}));
 
     if (res.status === 202) {
+      showUploadModal();
+      setSubmitLoading(false);
       startPolling(data.scan_id);
       return;
     }
@@ -177,6 +179,18 @@ async function handleSubmit() {
   }
 
   setSubmitLoading(false);
+}
+
+function showUploadModal() {
+  document.getElementById("upload-modal").classList.remove("hidden");
+}
+
+function closeUploadModal() {
+  document.getElementById("upload-modal").classList.add("hidden");
+}
+
+function handleModalOverlayClick(e) {
+  if (e.target === document.getElementById("upload-modal")) closeUploadModal();
 }
 
 // ── Polling ───────────────────────────────────────────────────────────────────

@@ -195,6 +195,16 @@
 
   </div><!-- /main -->
 
+  <!-- ── Upload success modal ── -->
+  <div id="upload-modal" class="modal-overlay hidden" onclick="handleModalOverlayClick(event)">
+    <div class="modal-box">
+      <button class="modal-close" onclick="closeUploadModal()">✕</button>
+      <div class="modal-icon">✓</div>
+      <div class="modal-title">File Uploaded</div>
+      <div class="modal-body">Your code has been submitted for scanning.<br>Results will be ready in the <strong>Results &amp; History</strong> tab.</div>
+    </div>
+  </div>
+
   <script src="js/results.js"></script>
   <script src="js/app.js"></script>
 </body>
