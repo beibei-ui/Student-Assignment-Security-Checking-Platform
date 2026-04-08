@@ -69,12 +69,20 @@ function switchView(name) {
 // ── Init ──────────────────────────────────────────────────────────────────────
 
 document.addEventListener("DOMContentLoaded", () => {
-  // Restore student ID
+  // Restore student ID — show login modal if none saved
   const stored = localStorage.getItem(LS_STUDENT_ID);
   if (stored) {
     document.getElementById("student-id").value = stored;
     setStudentIdHint(stored);
+  } else {
+    document.getElementById("login-modal").classList.remove("hidden");
+    setTimeout(() => document.getElementById("login-student-id").focus(), 100);
   }
+
+  // Allow pressing Enter to confirm in login modal
+  document.getElementById("login-student-id").addEventListener("keydown", e => {
+    if (e.key === "Enter") confirmStudentId();
+  });
 
   // Save student ID on change
   document.getElementById("student-id").addEventListener("input", e => {
@@ -179,6 +187,18 @@ async function handleSubmit() {
   }
 
   setSubmitLoading(false);
+}
+
+function confirmStudentId() {
+  const val = document.getElementById("login-student-id").value.trim();
+  if (!val) {
+    document.getElementById("login-error").classList.remove("hidden");
+    return;
+  }
+  localStorage.setItem(LS_STUDENT_ID, val);
+  document.getElementById("student-id").value = val;
+  setStudentIdHint(val);
+  document.getElementById("login-modal").classList.add("hidden");
 }
 
 function showUploadModal() {

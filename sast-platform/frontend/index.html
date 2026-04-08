@@ -195,6 +195,19 @@
 
   </div><!-- /main -->
 
+  <!-- ── Student ID login modal ── -->
+  <div id="login-modal" class="modal-overlay hidden">
+    <div class="modal-box">
+      <div class="modal-icon">🎓</div>
+      <div class="modal-title">Welcome to SAST Scanner</div>
+      <div class="modal-body">Enter your Student ID to save scan history across sessions.</div>
+      <input id="login-student-id" class="login-input" type="text"
+             placeholder="e.g. 001234567" autocomplete="off" />
+      <div id="login-error" class="login-error hidden">Please enter your Student ID.</div>
+      <button class="btn-login" onclick="confirmStudentId()">Continue</button>
+    </div>
+  </div>
+
   <!-- ── Upload success modal ── -->
   <div id="upload-modal" class="modal-overlay hidden" onclick="handleModalOverlayClick(event)">
     <div class="modal-box">
