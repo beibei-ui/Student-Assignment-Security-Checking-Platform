@@ -21,8 +21,15 @@ _TESTING = "PYTEST_CURRENT_TEST" in os.environ or os.environ.get("CI") == "true"
 
 if not _TESTING:
     # Check scanner binaries; accept /var/task/bin/bandit for zip-based deployments.
-    _bandit_paths = [shutil.which("bandit"), os.path.join(os.path.dirname(_sys.executable), "bandit"), "/var/task/bin/bandit"]
-    _bandit_found = any(p and os.path.isfile(p) for p in _bandit_paths)
+    # shutil.which() is checked first so unit-test mocks work correctly —
+    # if which() returns a non-None path we trust it without os.path.isfile.
+    _bandit_which = shutil.which("bandit")
+    _bandit_found = bool(_bandit_which) or any(
+        os.path.isfile(p) for p in [
+            os.path.join(os.path.dirname(_sys.executable), "bandit"),
+            "/var/task/bin/bandit",
+        ]
+    )
     if not _bandit_found:
         raise RuntimeError("Required scanner binary 'bandit' not found")
     if not shutil.which("semgrep"):
