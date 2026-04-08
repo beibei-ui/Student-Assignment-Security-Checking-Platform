@@ -115,7 +115,7 @@ get_lambda_url_from_cf() {
     --output text 2>/dev/null || true)
 
   if [[ -z "$url" || "$url" == "None" ]]; then
-    fail "Could not read LambdaAFunctionUrl from stack '$LAMBDA_A_STACK'.\n  Make sure Lambda A is deployed: ./02_deploy_lambda_a.sh"
+    fail "Could not read ApiGatewayUrl from stack '$LAMBDA_A_STACK'.\n  Make sure Lambda A is deployed: ./02_deploy_lambda_a.sh"
   fi
 
   # Strip trailing slash so URLs are consistent

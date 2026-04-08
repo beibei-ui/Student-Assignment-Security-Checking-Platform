@@ -124,7 +124,6 @@ Resources:
           - OPTIONS
         AllowHeaders:
           - Content-Type
-          - X-Student-Key
         MaxAge: 86400
 
   LambdaAIntegration:
@@ -177,4 +176,4 @@ Outputs:
       Frontend POST /scan and GET /status calls go here.
     Value: !Sub "https://${LambdaAApi}.execute-api.${AWS::Region}.amazonaws.com"
     Export:
-      Name: !Sub "${AWS::StackName}-LambdaAUrl"
+      Name: !Sub "${AWS::StackName}-ApiGatewayUrl"
