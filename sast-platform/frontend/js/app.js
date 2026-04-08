@@ -361,7 +361,7 @@ async function loadHistory() {
 
 async function loadHistoryScan(scanId) {
   try {
-    const res  = await fetch(`${API_BASE_URL}/status?scan_id=${encodeURIComponent(scanId)}`);
+    const res  = await fetch(`${API_BASE_URL}/status?scan_id=${encodeURIComponent(scanId)}&student_id=${encodeURIComponent(getStudentId())}`);
     const data = await res.json().catch(() => ({}));
 
     if (data.status === "DONE" && data.report_url) {
