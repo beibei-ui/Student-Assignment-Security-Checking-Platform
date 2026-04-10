@@ -62,6 +62,31 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# ── Auto-detect default VPC/subnets if not specified ──────────────────────────
+if [[ -z "$VPC_ID" ]]; then
+  VPC_ID="$(aws ec2 describe-vpcs --region "$AWS_REGION" \
+    --filters "Name=isDefault,Values=true" \
+    --query "Vpcs[0].VpcId" --output text 2>/dev/null || true)"
+  if [[ -z "$VPC_ID" || "$VPC_ID" == "None" ]]; then
+    echo "WARNING: No default VPC found — deploying without ECS (Lambda-only mode)."
+    VPC_ID=""
+  else
+    echo "[$(date '+%H:%M:%S')] --vpc-id not set, using default VPC: $VPC_ID"
+  fi
+fi
+
+if [[ -n "$VPC_ID" && -z "$SUBNET_IDS" ]]; then
+  SUBNET_IDS="$(aws ec2 describe-subnets --region "$AWS_REGION" \
+    --filters "Name=vpc-id,Values=$VPC_ID" "Name=defaultForAz,Values=true" \
+    --query "Subnets[:2].SubnetId" --output text 2>/dev/null | tr '[:space:]' ',' | sed 's/,$//' || true)"
+  if [[ -z "$SUBNET_IDS" ]]; then
+    echo "WARNING: Could not find subnets for VPC $VPC_ID — deploying without ECS."
+    VPC_ID=""
+  else
+    echo "[$(date '+%H:%M:%S')] --subnets not set, using default subnets: $SUBNET_IDS"
+  fi
+fi
+
 # ── Validation ─────────────────────────────────────────────────────────────────
 if [[ -n "$VPC_ID" && -z "$SUBNET_IDS" ]]; then
   echo "ERROR: --subnets is required when --vpc-id is set."
