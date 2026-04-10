@@ -33,7 +33,9 @@ if not _TESTING:
     if not _bandit_found:
         raise RuntimeError("Required scanner binary 'bandit' not found")
     if not shutil.which("semgrep"):
-        logging.getLogger(__name__).warning("Optional binary 'semgrep' not found; non-Python scans will fail")
+        logging.getLogger(__name__).info(
+            "semgrep binary not found; non-Python languages will use built-in pattern scanner (or ECS if configured)"
+        )
 
     # ---------------------------------------------------------------------------
     # Startup environment variable validation
@@ -203,11 +205,16 @@ def process_scan_request(scan_id: str, language: str, student_id: str,
                 return {"success": True, "scan_id": scan_id, "skipped": True}
             raise
 
-        # Non-Python languages (Java, JS, TS, Go, Ruby, C, C++) require Semgrep,
-        # which is not bundled in the Lambda zip (too large). Route them to ECS
-        # Fargate where the container image has Semgrep installed.
+        # Non-Python languages (Java, JS, TS, Go, Ruby, C, C++) can use Semgrep.
+        # Route to ECS Fargate only when ECS is configured (VPC deployment).
+        # When ECS is not configured, semgrep runs directly inside Lambda
+        # (semgrep is bundled in requirements.txt and invoked via python -m semgrep).
         SEMGREP_LANGUAGES = {'java', 'javascript', 'js', 'typescript', 'go', 'ruby', 'c', 'cpp'}
-        if language.lower() in SEMGREP_LANGUAGES:
+        ecs_configured = bool(
+            os.environ.get('ECS_CLUSTER_NAME', '').strip() and
+            os.environ.get('ECS_TASK_DEFINITION', '').strip()
+        )
+        if language.lower() in SEMGREP_LANGUAGES and ecs_configured:
             logger.info(
                 f"Language '{language}' requires Semgrep — routing to ECS Fargate - scan_id: {scan_id}"
             )
@@ -220,6 +227,10 @@ def process_scan_request(scan_id: str, language: str, student_id: str,
                 except Exception as db_err:
                     logger.error(f"Failed to update FAILED status after ECS launch error - scan_id: {scan_id}, error: {str(db_err)}")
             return ecs_result
+        if language.lower() in SEMGREP_LANGUAGES:
+            logger.info(
+                f"Language '{language}' requires Semgrep — running inline (ECS not configured) - scan_id: {scan_id}"
+            )
 
         # Step 1: Fetch source code from S3
         logger.info(f"Fetching code from S3 - scan_id: {scan_id}, key: {s3_code_key}")
