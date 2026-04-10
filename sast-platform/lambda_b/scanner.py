@@ -6,6 +6,7 @@ java/javascript/typescript/go/ruby/c/cpp -> semgrep
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import logging
 
@@ -167,7 +168,7 @@ class SecurityScanner:
         try:
             # Run Semgrep using locally-bundled rules (see _SEMGREP_CONFIG above)
             cmd = [
-                'semgrep',
+                sys.executable, '-m', 'semgrep',
                 f'--config={_SEMGREP_CONFIG}',
                 '--json',          # JSON output
                 '--quiet',         # Reduce output noise

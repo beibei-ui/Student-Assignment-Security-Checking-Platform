@@ -424,6 +424,7 @@ body {
   flex: 1;
   min-height: 0;
   overflow: hidden;
+  border-radius: 0 0 var(--radius) var(--radius);
 }
 
 .line-numbers {
@@ -449,7 +450,6 @@ body {
   margin: 0;
   background: transparent;
   border: none;
-  border-radius: 0 0 var(--radius) var(--radius);
   color: var(--text);
   font-family: "SF Mono", "Fira Code", "Consolas", monospace;
   font-size: 14px;
