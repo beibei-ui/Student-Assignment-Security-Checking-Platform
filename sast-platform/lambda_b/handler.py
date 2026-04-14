@@ -239,12 +239,12 @@ def process_scan_request(scan_id: str, language: str, student_id: str,
         # Route large Python submissions to ECS to avoid Lambda timeout/OOM.
         code_bytes = len(code.encode('utf-8'))
         semgrep_languages = {'java', 'javascript', 'typescript', 'go', 'ruby', 'c', 'cpp'}
-        needs_ecs = (code_bytes > LAMBDA_CODE_SIZE_LIMIT) or (language.lower() in semgrep_languages)
+        needs_ecs = (code_bytes > LAMBDA_CODE_SIZE_LIMIT) or (language.lower() in semgrep_languages and ecs_configured)
         if needs_ecs:
             reason = (
                 f"code size {code_bytes} bytes exceeds {LAMBDA_CODE_SIZE_LIMIT} limit"
                 if code_bytes > LAMBDA_CODE_SIZE_LIMIT
-                else f"language '{language}' requires Semgrep (not available in Lambda)"
+                else f"language '{language}' requires Semgrep — routing to ECS Fargate"
             )
             logger.info(f"Routing to ECS Fargate ({reason}) - scan_id: {scan_id}")
             update_scan_status(table, student_id, scan_id, 'ECS_QUEUED')
