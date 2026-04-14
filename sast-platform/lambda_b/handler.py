@@ -209,7 +209,7 @@ def process_scan_request(scan_id: str, language: str, student_id: str,
         # Route to ECS Fargate only when ECS is configured (VPC deployment).
         # When ECS is not configured, semgrep runs directly inside Lambda
         # (semgrep is bundled in requirements.txt and invoked via python -m semgrep).
-        SEMGREP_LANGUAGES = {'java', 'javascript', 'js', 'typescript', 'go', 'ruby', 'c', 'cpp'}
+        SEMGREP_LANGUAGES = {'java', 'javascript', 'js', 'typescript', 'go', 'ruby'}
         ecs_configured = bool(
             os.environ.get('ECS_CLUSTER_NAME', '').strip() and
             os.environ.get('ECS_TASK_DEFINITION', '').strip()
@@ -238,8 +238,8 @@ def process_scan_request(scan_id: str, language: str, student_id: str,
 
         # Route large Python submissions to ECS to avoid Lambda timeout/OOM.
         code_bytes = len(code.encode('utf-8'))
-        semgrep_languages = {'java', 'javascript', 'typescript', 'go', 'ruby', 'c', 'cpp'}
-        needs_ecs = (code_bytes > LAMBDA_CODE_SIZE_LIMIT) or (language.lower() in semgrep_languages)
+        semgrep_languages = {'java', 'javascript', 'typescript', 'go', 'ruby'}
+        needs_ecs = (code_bytes > LAMBDA_CODE_SIZE_LIMIT) or (language.lower() in semgrep_languages and ecs_configured)
         if needs_ecs:
             reason = (
                 f"code size {code_bytes} bytes exceeds {LAMBDA_CODE_SIZE_LIMIT} limit"
